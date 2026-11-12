@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrayleigh"
+version = "0.1.0.dev0"
+description = "Linear optical response of optical fibers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "A. Meoli", email = "alessandro.meoli@unicampania.it"}]
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.optional-dependencies]
+torch = ["torch>=2.2"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Repository = "https://github.com/ameoli/PyRayleigh"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
