@@ -28,8 +28,8 @@ float64 and complex128. Random realizations will be drawn once and reused;
 parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
-The current code provides the package scaffold and numerical helpers.
-Fiber models will be added incrementally.
+The current code provides the package scaffold, numerical helpers and SI
+unit conversions. Fiber models will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -56,3 +56,19 @@ This helper accepts physical numerical data; masks use `xp.asarray` directly.
 
 The tests use Array API Strict to check the common subset, and JAX to check
 JIT compilation and first/second derivatives through complex arithmetic.
+
+`pyrayleigh.units` converts power ratios, dB, attenuation, wavelength,
+frequency and chromatic dispersion. Attenuation is stored as the power
+coefficient alpha [1/m], with `P(z) = P(0) exp(-alpha*z)`; a one-way field
+uses half that exponent. The dispersion parameter D is in s/m^2, and beta2
+is in s^2/m. Wavelengths and optical frequencies are positive.
+
+```python
+from pyrayleigh import units
+
+alpha = units.attenuation_from_db_per_km(.2)
+beta2 = units.dispersion_to_gvd_at_wavelength(17 * units.PS_PER_NM_KM, 1550e-9)
+```
+
+The conversions infer the namespace from native arrays; Python values use
+NumPy unless `xp` is supplied. They keep the same x64 requirement for JAX.
