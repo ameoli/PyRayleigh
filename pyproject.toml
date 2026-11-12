@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "A. Meoli", email = "alessandro.meoli@unicampania.it"}]
-dependencies = ["numpy>=1.24", "scipy>=1.10"]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "array-api-compat>=1.10"]
 
 [project.optional-dependencies]
-torch = ["torch>=2.2"]
-dev = ["pytest>=7"]
+jax = ["jax>=0.4.35"]
+dev = ["pytest>=7", "array-api-strict>=2.1"]
 
 [project.urls]
 Repository = "https://github.com/ameoli/PyRayleigh"
