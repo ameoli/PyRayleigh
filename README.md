@@ -28,8 +28,9 @@ float64 and complex128. Random realizations will be drawn once and reused;
 parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
-The current code provides the package scaffold, numerical helpers and SI
-unit conversions. Fiber models will be added incrementally.
+The current code provides numerical helpers, SI conversions and the reference
+dispersion of one guided mode. Fiber sections and scattering models will be
+added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -72,3 +73,33 @@ beta2 = units.dispersion_to_gvd_at_wavelength(17 * units.PS_PER_NM_KM, 1550e-9)
 
 The conversions infer the namespace from native arrays; Python values use
 NumPy unless `xp` is supplied. They keep the same x64 requirement for JAX.
+
+`GuideOptics` stores the reference frequency [Hz], effective index, group
+index and beta2 [s^2/m]. With `dw = 2*pi*(frequency-frequency_ref)` it uses
+`beta = beta_ref + group_index*dw/c + beta2*dw**2/2`. The carrier and its
+offset can be evaluated separately, retaining small frequency shifts.
+
+```python
+from pyrayleigh import GuideOptics
+
+nu_ref = units.wavelength_to_frequency(1550e-9)
+guide = GuideOptics(nu_ref, effective_index=1.4682, group_index=1.4682, gvd=beta2)
+beta = guide.propagation_constant(nu_ref)
+delay_per_metre = guide.group_delay_per_length(nu_ref)
+```
+
+For differentiation with respect to guide parameters, construct the guide
+inside the transformed function with its native JAX inputs. Passing the
+guide object itself as a JAX argument is not yet supported. Each method
+accepts `xp` for explicit namespace selection; automatic selection considers
+both frequency and guide parameter arrays.
+
+If guide constants came from NumPy and frequencies are JAX arrays, select
+JAX explicitly (or prepare the constants as JAX arrays too):
+
+```python
+import jax.numpy as jnp
+
+frequency = jnp.asarray(nu_ref + 1e9)
+beta_jax = guide.propagation_constant(frequency, xp=jnp)
+```
