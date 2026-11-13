@@ -34,8 +34,8 @@ parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
-uniform sections, the built fiber layout, probe samples, point reflectors
-and Rayleigh sample storage and generation.
+uniform sections, the built fiber layout, probe samples, point reflectors,
+Rayleigh sample storage and generation, and spatial profiles.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -306,3 +306,35 @@ For fitting, rebuild the sample with fixed normals inside the transformed
 function, then attach it with `replace(fiber, rayleigh=sample)`. Both steps
 preserve JAX derivatives. Propagation will use this stored sample; the full
 fiber response will be implemented separately.
+
+`SpatialProfile(positions, values)` describes a static scalar field along
+the material coordinate, with linear interpolation between knots and zero
+outside them. Positions [m] are fixed Python or NumPy values: finite,
+nondecreasing, with at least two entries. A knot can occur twice to describe
+a step; its value there is the value on the right. At the last knot the
+profile takes its last supplied value. Knots may lie on either side of zero.
+
+```python
+from pyrayleigh import SpatialProfile
+
+strain = SpatialProfile([0., 1., 1., 3.], [0., 0., 10e-6, 10e-6])
+local_strain = strain.value([.5, 1., 2.])
+integrated_strain = strain.integral([.5, 1., 2.])
+```
+
+`value` evaluates the field, `antiderivative` integrates from `-inf`, and
+`integral` integrates from zero. The integrals are exact for the linear
+pieces; repeated knots add no area. Values carry the field's unit, such as
+dimensionless strain, temperature change [K] or index change. Integrals have
+that unit times metres. This representation will supply the strain,
+temperature and index perturbations used by the phase model.
+
+Values are finite real inputs, checked for dtype and matching shape and
+copied as float64 in their native namespace. Geometry is copied as read-only
+NumPy data. All three methods accept finite queries of any shape and an
+optional `xp`; automatic namespace selection considers both values and
+queries. Select JAX explicitly when the stored values are NumPy arrays.
+Construct the profile inside the transformed function when fitting its
+values. JAX derivatives in values and query position are supported; position
+derivatives are intended away from the knots. Time histories and their
+composition into `FiberState` will follow separately.
