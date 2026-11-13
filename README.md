@@ -39,7 +39,8 @@ Rayleigh sample storage and generation, spatial profiles, time histories
 and their composition into fields and a prescribed fiber state. Guide
 sensitivities describe the local coupling to strain and temperature.
 Static optical paths integrate phase, group delay and distributed loss through
-the sections. Point-reflector returns can be summed coherently.
+the sections. Point-reflector and stored Rayleigh returns can be summed
+coherently.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -555,6 +556,37 @@ namespace selection includes the frequency, guide and state values, section
 attenuation and the participating point coefficients. Use explicit `xp` for
 mixed NumPy/JAX arrays. For fitting, construct the fiber and elements inside
 the transformed function; coefficients and losses retain JAX derivatives.
-The state is static, as for `OpticalPath`. This step handles direct point
-returns; stored Rayleigh contributions and multiple-reflection paths will
-be added separately. Evaluation draws no random numbers.
+The state is static, as for `OpticalPath`. This function handles direct
+point returns. Evaluation draws no random numbers.
+
+`rayleigh_response(fiber, frequency, state=None, xp=None)` sums the stored
+Rayleigh contributions at the left port:
+
+`H_R(nu) = sum_j r_j * prod_(s_k<=s_j)(t_forward,k*t_reverse,k) * P_roundtrip(0,s_j,nu)`.
+
+```python
+from pyrayleigh import rayleigh_response
+
+rayleigh_reflected = rayleigh_response(fiber_generated, probe.frequency)
+```
+
+The local coefficients already include their cell-length normalization;
+evaluation uses them directly with their fixed material positions. No
+sample is drawn or rescaled. Without a stored realization the result is
+zero. Rayleigh samples leave each other's transmission unchanged; the full
+distributed alpha is already included in `P_roundtrip`, as in PyOFDR.
+
+Point transmissions are applied before each Rayleigh return. At an exact
+coincidence the point comes first, as in the private model: the Rayleigh
+sample is just behind it. Both endpoints and repeated Rayleigh positions
+at cell boundaries follow this rule. This is a material-coordinate ordering;
+the function does not merge samples and reflectors into acquisition bins.
+
+The result is complex128 with the frequency query's shape. Namespace
+selection includes the stored coefficients and any point transmissions.
+Use `xp` explicitly for mixed NumPy/JAX inputs. For fitting, rebuild the
+sample from fixed normals inside the transformed function, or parameterize
+its coefficients directly, then attach it to the fiber. Native derivatives
+through the coherent sum and propagation are retained. The state remains
+static. The combined response interface and multiple-reflection paths will
+follow separately.
