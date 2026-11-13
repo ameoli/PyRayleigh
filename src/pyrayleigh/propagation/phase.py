@@ -1,4 +1,4 @@
-"""Static one-way phase and group delay through material sections."""
+"""Static phase, group delay and transmission through material sections."""
 
 from dataclasses import dataclass, field
 import math
@@ -7,6 +7,7 @@ from numbers import Real
 from ..backends import real_arrays
 from ..fiber import Fiber
 from ..state import FiberState
+from .loss import FiberLoss
 
 _GUIDE_PARAMETERS = ("frequency_ref", "effective_index", "group_index", "gvd",
                      "strain_phase_factor", "strain_group_factor",
@@ -15,7 +16,7 @@ _GUIDE_PARAMETERS = ("frequency_ref", "effective_index", "group_index", "gvd",
 
 @dataclass(frozen=True)
 class OpticalPath:
-    """Phase model of a fiber in a static state, without cached numerical data.
+    """Static path model, without cached numerical data.
 
     Endpoints are fixed material positions [m]. Frequencies [Hz] and native
     guide/state parameters remain differentiable. Phase uses exp(-i*phi).
@@ -32,8 +33,8 @@ class OpticalPath:
         if not self.state.is_static:
             raise NotImplementedError("OpticalPath requires a static FiberState")
 
-    def _inputs(self, frequency, xp):
-        parameters = [frequency]
+    def _inputs(self, frequency, xp, extra=()):
+        parameters = [frequency, *extra]
         for section in self.fiber.sections:
             parameters.extend(getattr(section.optics, name) for name in _GUIDE_PARAMETERS)
         for state_field in (self.state.axial_strain, self.state.temperature_change):
@@ -97,7 +98,33 @@ class OpticalPath:
             delay = delay + optics.group_delay_per_length(frequency, xp=xp)*group_length
         return delay
 
+    @property
+    def loss(self):
+        return FiberLoss(self.fiber)
+
+    def attenuation_integral(self, position, frequency, *, xp=None):
+        """Cumulative distributed power loss A(position, frequency) [1]."""
+        return self.loss.attenuation_integral(position, frequency, xp=xp)
+
+    def _transmission(self, start, end, frequency, round_trip, xp):
+        rates = [section.attenuation for section in self.fiber.sections]
+        xp, frequency = self._inputs(frequency, xp, extra=rates)
+        phase = self.phase_factor(start, end, frequency, round_trip, xp=xp)
+        loss = (self.attenuation_integral(end, frequency, xp=xp)
+                - self.attenuation_integral(start, frequency, xp=xp))
+        factor = 1. if round_trip else .5
+        envelope = xp.exp(-factor*loss)
+        return xp.astype(envelope, xp.complex128)*phase
+
+    def transmission(self, start, end, frequency, *, xp=None):
+        """One-way distributed field factor exp(-dA/2)*exp(-i*phi)."""
+        return self._transmission(start, end, frequency, False, xp)
+
+    def round_trip(self, start, end, frequency, *, xp=None):
+        """Distributed there-and-back field factor exp(-dA)*exp(-2i*phi)."""
+        return self._transmission(start, end, frequency, True, xp)
+
 
 def optical_path(fiber, state=None):
-    """Build the phase model; omitted state means the reference fiber."""
+    """Build the static path model; omitted state means the reference fiber."""
     return OpticalPath(fiber, FiberState() if state is None else state)

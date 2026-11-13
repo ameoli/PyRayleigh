@@ -38,7 +38,8 @@ uniform sections, the built fiber layout, probe samples, point reflectors,
 Rayleigh sample storage and generation, spatial profiles, time histories
 and their composition into fields and a prescribed fiber state. Guide
 sensitivities describe the local coupling to strain and temperature.
-Static optical paths integrate phase and group delay through the sections.
+Static optical paths integrate phase, group delay and distributed loss through
+the sections.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -499,5 +500,33 @@ guide parameters and state values. Select JAX explicitly when mixing NumPy
 constants and JAX arrays. Construct the path inside the transformed function
 when fitting its guide or state. Endpoints remain fixed geometry.
 This step handles static states; a state with a time history raises
-`NotImplementedError`. Loss, scattering amplitudes and the complete fiber
-response will be added separately.
+`NotImplementedError`. Scattering amplitudes and the complete fiber response
+will be added separately.
+
+`OpticalPath.attenuation_integral(position, frequency)` returns cumulative
+distributed power loss `A = int_0^position alpha ds` [1]. Each constant
+section rate is integrated over its exact overlap with the path. Positions
+before the input give zero, and positions past the output give the full
+fiber loss. The output shape is `position.shape + frequency.shape`; the
+current section rates are frequency independent.
+
+```python
+loss = path.attenuation_integral([0., fiber.length], probe.frequency)
+transmission = path.transmission(0., fiber.length, probe.frequency)
+round_trip = path.round_trip(0., fiber.length, probe.frequency)
+```
+
+For an interval, `dA = A(end) - A(start)`. One-way field transmission is
+`exp(-dA/2)*exp(-i*phi)`; there-and-back transmission is
+`exp(-dA)*exp(-2i*phi)`. Their power factors are `exp(-dA)` and
+`exp(-2dA)`. Both methods use fixed endpoints as for `phase_factor` and
+accept optional `xp` selection. They include the attenuation parameters
+when selecting the namespace, preserving JAX derivatives in the rates.
+
+The loss helper is `path.loss` (`propagation.loss.FiberLoss`). It uses the
+full `Section.attenuation`, as in PyOFDR, including when a Rayleigh sample
+is attached. Stored Rayleigh coefficients leave this distributed loss
+unchanged. Loss uses material lengths; the prescribed state changes the
+phase and delay. These factors describe distributed propagation. The
+scattering solver will combine discrete element coefficients separately;
+bend-loss models will follow.
