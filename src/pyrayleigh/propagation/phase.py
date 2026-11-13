@@ -1,0 +1,103 @@
+"""Static one-way phase and group delay through material sections."""
+
+from dataclasses import dataclass, field
+import math
+from numbers import Real
+
+from ..backends import real_arrays
+from ..fiber import Fiber
+from ..state import FiberState
+
+_GUIDE_PARAMETERS = ("frequency_ref", "effective_index", "group_index", "gvd",
+                     "strain_phase_factor", "strain_group_factor",
+                     "temperature_phase_factor", "temperature_group_factor")
+
+
+@dataclass(frozen=True)
+class OpticalPath:
+    """Phase model of a fiber in a static state, without cached numerical data.
+
+    Endpoints are fixed material positions [m]. Frequencies [Hz] and native
+    guide/state parameters remain differentiable. Phase uses exp(-i*phi).
+    """
+
+    fiber: Fiber
+    state: FiberState = field(default_factory=FiberState)
+
+    def __post_init__(self):
+        if not isinstance(self.fiber, Fiber):
+            raise TypeError("fiber must be a Fiber")
+        if not isinstance(self.state, FiberState):
+            raise TypeError("state must be a FiberState")
+        if not self.state.is_static:
+            raise NotImplementedError("OpticalPath requires a static FiberState")
+
+    def _inputs(self, frequency, xp):
+        parameters = [frequency]
+        for section in self.fiber.sections:
+            parameters.extend(getattr(section.optics, name) for name in _GUIDE_PARAMETERS)
+        for state_field in (self.state.axial_strain, self.state.temperature_change):
+            parameters.extend(term.profile.values for term in state_field.terms)
+        xp, arrays = real_arrays(*parameters, xp=xp)
+        return xp, arrays[0]
+
+    def _piece_lengths(self, start, end, xp):
+        for value in (start, end):
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise TypeError("path endpoints must be fixed real numbers")
+            if not math.isfinite(value):
+                raise ValueError("path endpoints must be finite")
+        if not 0. <= start <= end <= self.fiber.length:
+            raise ValueError("path requires 0 <= start <= end <= fiber.length")
+        start, end = float(start), float(end)
+        for section in self.fiber.sections:
+            low, high = max(start, float(section.start)), min(end, float(section.end))
+            if low >= high:
+                continue
+            strain = (self.state.axial_strain.integral(high, xp=xp)
+                      - self.state.axial_strain.integral(low, xp=xp))
+            temperature = (self.state.temperature_change.integral(high, xp=xp)
+                           - self.state.temperature_change.integral(low, xp=xp))
+            optics = section.optics
+            _, (sp, tp, sg, tg) = real_arrays(optics.strain_phase_factor,
+                                             optics.temperature_phase_factor,
+                                             optics.strain_group_factor,
+                                             optics.temperature_group_factor, xp=xp)
+            phase_length = (high - low) + sp*strain + tp*temperature
+            group_length = (high - low) + sg*strain + tg*temperature
+            yield optics, phase_length, group_length
+
+    def _phase_parts(self, start, end, frequency, xp):
+        xp, frequency = self._inputs(frequency, xp)
+        carrier, offset = xp.zeros_like(frequency), xp.zeros_like(frequency)
+        for optics, phase_length, group_length in self._piece_lengths(start, end, xp):
+            beta_ref = optics.propagation_constant(optics.frequency_ref, xp=xp)
+            carrier = carrier + beta_ref*phase_length
+            offset = offset + optics.propagation_constant_offset(frequency, xp=xp)*group_length
+        return xp, carrier, offset
+
+    def one_way_phase(self, start, end, frequency, *, xp=None):
+        """Accumulated one-way phase [rad]; a large absolute number."""
+        _, carrier, offset = self._phase_parts(start, end, frequency, xp)
+        return carrier + offset
+
+    def phase_factor(self, start, end, frequency, round_trip=False, *, xp=None):
+        """exp(-i*m*phi), with m=2 for a round trip; carrier and offset kept apart."""
+        xp, carrier, offset = self._phase_parts(start, end, frequency, xp)
+        multiple = 2. if round_trip else 1.
+        i = xp.asarray(-1j, dtype=xp.complex128)
+        return (xp.exp(i*xp.astype(multiple*carrier, xp.complex128))
+                * xp.exp(i*xp.astype(multiple*offset, xp.complex128)))
+
+    def group_delay(self, start, end, frequency, *, xp=None):
+        """One-way d(phi)/d(omega) [s]."""
+        xp, frequency = self._inputs(frequency, xp)
+        delay = xp.zeros_like(frequency)
+        for optics, _, group_length in self._piece_lengths(start, end, xp):
+            delay = delay + optics.group_delay_per_length(frequency, xp=xp)*group_length
+        return delay
+
+
+def optical_path(fiber, state=None):
+    """Build the phase model; omitted state means the reference fiber."""
+    return OpticalPath(fiber, FiberState() if state is None else state)

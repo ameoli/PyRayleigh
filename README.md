@@ -38,6 +38,7 @@ uniform sections, the built fiber layout, probe samples, point reflectors,
 Rayleigh sample storage and generation, spatial profiles, time histories
 and their composition into fields and a prescribed fiber state. Guide
 sensitivities describe the local coupling to strain and temperature.
+Static optical paths integrate phase and group delay through the sections.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -462,5 +463,41 @@ The factors are independent inputs. When changing physical `p_e`, `xi` or
 the phase law then recovers PyOFDR's
 `(1-p_e)*epsilon_mechanical + (xi+alpha_L)*dT`.
 Construct the guide inside the transformed function when fitting these
-parameters. Reference propagation and group-delay methods still describe
-the unperturbed guide; applying state fields along the fiber will follow.
+parameters. Reference propagation and group-delay methods describe the
+unperturbed guide.
+
+`optical_path(fiber, state=None)` builds an `OpticalPath` in a static state.
+Omitting the state selects the reference fiber. Endpoints are fixed finite
+real scalars in material coordinates [m], with `0 <= start <= end <= fiber.length`.
+
+```python
+from pyrayleigh import optical_path
+
+path = optical_path(fiber)
+phase = path.one_way_phase(0., fiber.length, probe.frequency)
+field_phase = path.phase_factor(0., fiber.length, probe.frequency)
+delay = path.group_delay(0., fiber.length, probe.frequency)
+```
+
+Within each traversed section, let `d` be its traversed length and `dW` the
+exact field integrals over that interval. The phase and group lengths are
+`Lp = d + Kp_strain*dW_strain + Kp_temperature*dW_temperature` and
+`Lg = d + Kg_strain*dW_strain + Kg_temperature*dW_temperature`. The one-way
+phase is the sum of `beta_ref*Lp + (beta(nu)-beta_ref)*Lg`; the group delay
+is the sum of `beta'(nu)*Lg`. Sensitivities belong to each section, so a
+profile crossing a boundary gets the weights of both traversed sections.
+
+`phase_factor` returns `exp(-i*phase)`, or `exp(-2i*phase)` with
+`round_trip=True`. Carrier and frequency-offset terms are exponentiated
+separately, preserving small frequency changes on long paths.
+`one_way_phase` returns their sum as a diagnostic absolute phase.
+Frequencies are finite positive Hz within the declared optical band;
+only real dtype is checked here, preserving native JAX queries.
+
+All three methods accept `xp`; automatic selection considers frequency,
+guide parameters and state values. Select JAX explicitly when mixing NumPy
+constants and JAX arrays. Construct the path inside the transformed function
+when fitting its guide or state. Endpoints remain fixed geometry.
+This step handles static states; a state with a time history raises
+`NotImplementedError`. Loss, scattering amplitudes and the complete fiber
+response will be added separately.
