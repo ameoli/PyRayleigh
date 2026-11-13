@@ -35,7 +35,8 @@ remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
 uniform sections, the built fiber layout, probe samples, point reflectors,
-Rayleigh sample storage and generation, spatial profiles and time histories.
+Rayleigh sample storage and generation, spatial profiles, time histories
+and their composition into fields.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -361,5 +362,36 @@ namespace from both stored values and queries, as for `SpatialProfile`.
 For JAX fitting, construct the history inside the transformed function.
 Values and query time are differentiable, with time derivatives intended
 away from the sample times. These are sampled, linearly interpolated
-histories. Composition with spatial profiles and `FiberState` will follow
-separately.
+histories.
+
+`FieldTerm(profile, history=None)` represents `profile(s)*history(t)`.
+Without a history it is static. `Field(terms=())` sums any number of terms
+of the same physical quantity; an empty field is zero.
+
+```python
+from pyrayleigh import Field, FieldTerm
+
+baseline = SpatialProfile([0., 3.], [2e-6, 2e-6])
+strain_field = Field([FieldTerm(baseline), FieldTerm(strain, history)])
+strain_samples = strain_field.value([.5, 2.], time=[0., 1.])
+strain_integrals = strain_field.integral([.5, 2.], time=[0., 1.])
+```
+
+Both containers provide `value(position, time=0., xp=None)` and
+`integral(position, time=0., xp=None)`. The latter integrates in space from
+zero at fixed laboratory time, multiplying each exact profile integral by
+its history value. The field's unit is the product of profile and history
+units; all summed terms must describe the same quantity.
+
+Positions and times follow array broadcasting rules. Matching shapes give
+paired samples; shapes `(N, 1)` and `(M,)` give an `(N, M)` position-time
+grid. Static terms and empty fields follow the same shape rules.
+Automatic namespace selection considers both queries and all profile and
+history values. Use `xp` explicitly for mixed NumPy/JAX data.
+
+`Field.is_static` means all terms have `history=None`. `Field.is_zero` means
+the term tuple is empty; zero-valued terms are retained. These flags inspect
+structure, preserving native trainable values. For JAX fitting, construct
+the terms and field inside the transformed function. Values, spatial
+integrals and their derivatives remain native through the composition.
+`FiberState` and the optical coupling of these fields will follow separately.

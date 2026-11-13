@@ -3,7 +3,7 @@ import array_api_strict as strict
 import numpy as np
 import pytest
 
-from pyrayleigh import SpatialProfile, TimeHistory
+from pyrayleigh import Field, FieldTerm, SpatialProfile, TimeHistory
 
 
 @pytest.fixture
@@ -219,3 +219,121 @@ def test_jax_history_is_constant_outside_the_sampled_interval(jax_numpy, time):
     second = jax.jit(jax.grad(jax.grad(history.value)))(query)
     np.testing.assert_array_equal(first, 0.)
     np.testing.assert_array_equal(second, 0.)
+
+
+def test_sum_of_static_and_dynamic_terms_at_paired_samples(xp):
+    dynamic = FieldTerm(SpatialProfile([0., 2.], xp.asarray([2., 2.])),
+                        TimeHistory([0., 2.], xp.asarray([1., 3.])))
+    static = FieldTerm(SpatialProfile([1., 3.], xp.asarray([-1., -1.])))
+    field = Field([dynamic, static])
+    position = xp.asarray([0., 1., 3.])
+    time = xp.asarray([0., 1., 2.])
+    np.testing.assert_array_equal(np.asarray(field.value(position, time)), [2., 3., -1.])
+    np.testing.assert_array_equal(np.asarray(field.integral(position, time)), [0., 4., 10.])
+
+
+def test_fields_broadcast_a_position_time_grid(xp):
+    dynamic = FieldTerm(SpatialProfile([0., 2.], xp.asarray([2., 2.])),
+                        TimeHistory([0., 2.], xp.asarray([1., 3.])))
+    static = FieldTerm(SpatialProfile([1., 3.], xp.asarray([-1., -1.])))
+    field = Field([dynamic, static])
+    position = xp.asarray([[0.], [1.], [3.]])
+    time = xp.asarray([0., 1., 2.])
+    expected = [[2., 4., 6.], [1., 3., 5.], [-1., -1., -1.]]
+    expected_integral = [[0., 0., 0.], [2., 4., 6.], [2., 6., 10.]]
+    np.testing.assert_array_equal(np.asarray(field.value(position, time)), expected)
+    np.testing.assert_array_equal(np.asarray(field.integral(position, time)), expected_integral)
+
+
+def test_static_term_broadcasts_over_time_and_defaults_to_time_zero(xp):
+    term = FieldTerm(SpatialProfile([0., 2.], xp.asarray([2., 2.])))
+    time = xp.zeros((2, 3), dtype=xp.float64)
+    for method in (term.value, term.integral):
+        actual = method(1., time)
+        assert actual.shape == (2, 3)
+        assert actual.dtype == xp.float64
+        np.testing.assert_array_equal(np.asarray(actual), np.full((2, 3), 2.))
+        np.testing.assert_array_equal(np.asarray(method(1.)), 2.)
+
+
+@pytest.mark.parametrize("shape", [(2, 3), (0,)])
+def test_empty_field_is_zero_in_the_query_namespace(xp, shape):
+    field = Field()
+    assert field.is_zero and field.is_static
+    time = xp.zeros(shape, dtype=xp.float64)
+    for method in (field.value, field.integral):
+        actual = method(1., time)
+        assert actual.shape == shape
+        assert actual.dtype == xp.float64
+        np.testing.assert_array_equal(np.asarray(actual), np.zeros(shape))
+
+
+def test_field_stores_its_terms_and_flags_depend_only_on_structure():
+    profile = SpatialProfile([0., 1.], [0., 0.])
+    static = FieldTerm(profile)
+    terms = [static]
+    field = Field(terms)
+    terms.clear()
+    assert field.terms == (static,)
+    assert field.terms[0].profile is profile
+    assert field.is_static and not field.is_zero
+    with_history = Field([FieldTerm(profile, TimeHistory([0.], [0.]))])
+    assert not with_history.is_static and not with_history.is_zero
+
+
+def test_field_containers_require_profiles_histories_and_terms():
+    profile = SpatialProfile([0., 1.], [1., 1.])
+    with pytest.raises(TypeError, match="SpatialProfile"):
+        FieldTerm(None)
+    with pytest.raises(TypeError, match="TimeHistory"):
+        FieldTerm(profile, profile)
+    with pytest.raises(TypeError, match="FieldTerm"):
+        Field([profile])
+
+
+def test_mixed_term_namespaces_require_explicit_selection(jax_numpy):
+    numpy_profile = SpatialProfile([0., 2.], [1., 3.])
+    jax_profile = SpatialProfile([0., 2.], jax_numpy.asarray([1., 3.]))
+    history = TimeHistory([0., 2.], jax_numpy.asarray([1., 3.]))
+    mixed_term = FieldTerm(numpy_profile, history)
+    separate_terms = Field([FieldTerm(numpy_profile), FieldTerm(jax_profile)])
+    for obj in (mixed_term, Field([mixed_term]), separate_terms):
+        for method, expected in ((obj.value, 4.), (obj.integral, 3.)):
+            with pytest.raises(TypeError):
+                method(1., 1.)
+            actual = method(1., 1., xp=jax_numpy)
+            assert actual.dtype == jax_numpy.float64
+            np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=0.)
+
+
+def test_field_rejects_incompatible_position_time_shapes(xp):
+    term = FieldTerm(SpatialProfile([0., 2.], xp.asarray([1., 1.])))
+    position, time = xp.asarray([0., 1.]), xp.asarray([0., 1., 2.])
+    for obj in (term, Field([term]), Field()):
+        for method in (obj.value, obj.integral):
+            with pytest.raises(ValueError):
+                method(position, time)
+
+
+def test_jax_field_phase_derivatives_through_space_time_composition(jax_numpy):
+    import jax
+    def returned_field(parameters):
+        a, b, position, time = parameters
+        profile = SpatialProfile([0., 2.], jax_numpy.stack((a, 3.*a))*1e-6)
+        history = TimeHistory([0., 2.], jax_numpy.stack((b, 3.*b)))
+        baseline = SpatialProfile([0., 2.], jax_numpy.asarray([1e-6, 1e-6]))
+        field = Field([FieldTerm(baseline), FieldTerm(profile, history)])
+        phase = 1e6*field.integral(position, time)
+        return jax_numpy.real(jax_numpy.exp(-1j*phase))
+    parameters = jax_numpy.asarray([1., 2., 1., .5], dtype=jax_numpy.float64)
+    value = jax.jit(returned_field)(parameters)
+    gradient = jax.jit(jax.grad(returned_field))(parameters)
+    hessian = jax.jit(jax.hessian(returned_field))(parameters)
+    phase_gradient = np.array([4.5, 2.25, 7., 3.])
+    phase_hessian = np.array([[0., 2.25, 6., 3.], [2.25, 0., 3., 1.5],
+                              [6., 3., 3., 4.], [3., 1.5, 4., 0.]])
+    expected_hessian = (-np.cos(5.5)*np.outer(phase_gradient, phase_gradient)
+                        - np.sin(5.5)*phase_hessian)
+    np.testing.assert_allclose(value, np.cos(5.5), rtol=1e-14, atol=0.)
+    np.testing.assert_allclose(gradient, -np.sin(5.5)*phase_gradient, rtol=1e-13, atol=0.)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-13, atol=1e-15)

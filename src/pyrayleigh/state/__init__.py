@@ -1,1 +1,1 @@
-from .fields import SpatialProfile, TimeHistory
+from .fields import Field, FieldTerm, SpatialProfile, TimeHistory

@@ -119,3 +119,81 @@ class TimeHistory:
 
     def __repr__(self):
         return f"TimeHistory(sample_count={len(self.times)})"
+
+
+def _field_inputs(terms, position, time, xp):
+    parameters = [position, time]
+    for term in terms:
+        parameters.append(term.profile.values)
+        if term.history is not None:
+            parameters.append(term.history.values)
+    xp, arrays = real_arrays(*parameters, xp=xp)
+    position, time = xp.broadcast_arrays(arrays[0], arrays[1])
+    return xp, position, time
+
+
+@dataclass(frozen=True)
+class FieldTerm:
+    """One separable profile(s)*history(t); history=None gives a static term."""
+
+    profile: SpatialProfile
+    history: TimeHistory | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.profile, SpatialProfile):
+            raise TypeError("profile must be a SpatialProfile")
+        if self.history is not None and not isinstance(self.history, TimeHistory):
+            raise TypeError("history must be a TimeHistory or None")
+
+    def _time_factor(self, time, xp):
+        if self.history is None:
+            return xp.ones_like(time)
+        return self.history.value(time, xp=xp)
+
+    def value(self, position, time=0., *, xp=None):
+        """Profile value times history, broadcast over position [m] and time [s]."""
+        xp, position, time = _field_inputs((self,), position, time, xp)
+        return self.profile.value(position, xp=xp) * self._time_factor(time, xp)
+
+    def integral(self, position, time=0., *, xp=None):
+        """Exact spatial integral from 0 to position, at the given laboratory time."""
+        xp, position, time = _field_inputs((self,), position, time, xp)
+        return self.profile.integral(position, xp=xp) * self._time_factor(time, xp)
+
+
+@dataclass(frozen=True)
+class Field:
+    """Sum of separable terms of the same physical quantity."""
+
+    terms: tuple = ()
+
+    def __post_init__(self):
+        terms = tuple(self.terms)
+        if any(not isinstance(term, FieldTerm) for term in terms):
+            raise TypeError("terms must contain only FieldTerm objects")
+        object.__setattr__(self, "terms", terms)
+
+    @property
+    def is_static(self):
+        return all(term.history is None for term in self.terms)
+
+    @property
+    def is_zero(self):
+        """True only for the empty sum, independent of parameter values."""
+        return len(self.terms) == 0
+
+    def value(self, position, time=0., *, xp=None):
+        """Field value, broadcast over position [m] and laboratory time [s]."""
+        xp, position, time = _field_inputs(self.terms, position, time, xp)
+        total = xp.zeros_like(position)
+        for term in self.terms:
+            total = total + term.value(position, time, xp=xp)
+        return total
+
+    def integral(self, position, time=0., *, xp=None):
+        """Exact spatial integral from 0 to position at fixed laboratory time."""
+        xp, position, time = _field_inputs(self.terms, position, time, xp)
+        total = xp.zeros_like(position)
+        for term in self.terms:
+            total = total + term.integral(position, time, xp=xp)
+        return total
