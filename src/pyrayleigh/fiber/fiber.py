@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import math
 from numbers import Real
 
-from ..scattering import PointReflector
+from ..scattering import PointReflector, RayleighRealization, generate_rayleigh
 from .section import Section
 
 SECTION_END_TOLERANCE = 1e-12
@@ -19,6 +19,7 @@ class Fiber:
     Small boundary round-off is snapped to the neighbouring section.
     Section parameters are retained as supplied, including JAX arrays.
     Point elements have distinct positions in [0, length] and are sorted.
+    An optional stored Rayleigh sample covers exactly [0, length].
     """
 
     fiber_id: str
@@ -28,6 +29,7 @@ class Fiber:
     frequency_max: float
     sections: tuple
     elements: tuple = ()
+    rayleigh: RayleighRealization | None = None
 
     def __post_init__(self):
         if not isinstance(self.fiber_id, str):
@@ -44,6 +46,8 @@ class Fiber:
             raise ValueError("frequency_min must be smaller than frequency_max")
         self._check_sections()
         self._check_elements()
+        if self.rayleigh is not None:
+            self._check_rayleigh()
 
     def _check_sections(self):
         sections = list(self.sections)
@@ -79,3 +83,14 @@ class Fiber:
             if left.position == right.position:
                 raise ValueError("elements must have distinct positions")
         object.__setattr__(self, "elements", elements)
+
+    def _check_rayleigh(self):
+        if not isinstance(self.rayleigh, RayleighRealization):
+            raise TypeError("rayleigh must be a RayleighRealization or None")
+        if self.rayleigh.extent != self.length:
+            raise ValueError("Rayleigh cell edges must cover exactly [0, length]")
+
+    def with_rayleigh(self, seed, *, cell_length, xp=None):
+        """Return a copy with a new sample drawn from the current section rates."""
+        sample = generate_rayleigh(self, seed, cell_length=cell_length, xp=xp)
+        return replace(self, rayleigh=sample)

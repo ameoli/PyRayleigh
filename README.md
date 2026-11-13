@@ -6,6 +6,11 @@ The initial scope is the fiber physics currently covered by PyOFDR.
 Laser, interferometer, detector and acquisition models belong in the
 interrogator packages, such as PyOFDR and PyOTDR.
 
+The current library is configured through Python model objects. The planned
+PyOFDR integration will read its YAML in PyOFDR and construct these objects
+from the fiber parameters. A dedicated format for saving built fibers can
+be added later, storing the actual disorder as well as the model parameters.
+
 The planned structure separates the built fiber, its state and the response:
 
 ```
@@ -279,4 +284,25 @@ otherwise infers it from the normals and section rates; select JAX explicitly
 when reusing NumPy draws with JAX rates. Construct the fiber and sample
 inside the transformed function, with fixed draws and cell length. Rates
 must be finite and nonnegative, with `R*ds << 1` for weak scattering;
-derivatives in R use `R > 0`. Attachment to `Fiber` will be added separately.
+derivatives in R use `R > 0`.
+
+`Fiber.rayleigh` holds an optional `RayleighRealization`, with `None` as the
+default. Its cell edges must cover exactly `[0, fiber.length]`. The supplied
+sample is kept as is, including its native coefficient arrays. Construction
+does not draw, resample or snap its geometry; cells can cross section
+boundaries and can have different lengths.
+
+```python
+fiber_with_rayleigh = replace(fiber, rayleigh=rayleigh)
+fiber_generated = fiber.with_rayleigh(seed=1234, cell_length=1.)
+```
+
+`with_rayleigh` returns a copy containing a new sample, using the same seed,
+cell length and optional `xp` arguments as `generate_rayleigh`. The original
+fiber keeps its sections, elements and stored sample unchanged.
+
+Stored coefficients are not automatically rescaled when section rates change.
+For fitting, rebuild the sample with fixed normals inside the transformed
+function, then attach it with `replace(fiber, rayleigh=sample)`. Both steps
+preserve JAX derivatives. Propagation will use this stored sample; the full
+fiber response will be implemented separately.

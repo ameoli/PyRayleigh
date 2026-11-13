@@ -1,9 +1,11 @@
+from dataclasses import replace
 import math
 
 import numpy as np
 import pytest
 
-from pyrayleigh import Fiber, GuideOptics, Section, lossless_reflector, units
+from pyrayleigh import (Fiber, GuideOptics, RayleighRealization, Section,
+                        lossless_reflector, rayleigh_from_normals, units)
 
 OPTICS = GuideOptics(193414489032258.06, 1.4682, 1.4682)
 
@@ -28,6 +30,7 @@ def test_single_section_fiber():
     assert fiber.reference_temperature == 293.15
     assert fiber.frequency_min == 1.9e14
     assert fiber.elements == ()
+    assert fiber.rayleigh is None
 
 
 def test_input_section_list_is_not_retained():
@@ -132,6 +135,72 @@ def test_nearby_elements_are_not_snapped_together():
 def test_elements_must_be_point_reflectors(element):
     with pytest.raises(TypeError, match="PointReflector"):
         make_fiber([section(0., 2.)], elements=[element])
+
+
+def test_attached_rayleigh_keeps_the_supplied_sample_and_partial_cell():
+    sample = RayleighRealization([.01j, .02j], [.5, 1.75], [0., 1.5, 2.])
+    fiber = make_fiber([section(0., 1.), section(1., 2.)], rayleigh=sample)
+    assert fiber.rayleigh is sample
+    assert fiber.rayleigh.coefficients is sample.coefficients
+    np.testing.assert_array_equal(fiber.rayleigh.cell_lengths(), [1.5, .5])
+
+
+@pytest.mark.parametrize("extent", [1.9, 2.1, np.nextafter(2., 0.), np.nextafter(2., np.inf)])
+def test_rayleigh_must_cover_the_exact_fiber_length(extent):
+    sample = RayleighRealization([.01j], [0.], [0., extent])
+    with pytest.raises(ValueError, match="cover exactly"):
+        make_fiber([section(0., 2.)], rayleigh=sample)
+
+
+@pytest.mark.parametrize("sample", [0., {}, lossless_reflector(1., .04)])
+def test_rayleigh_requires_a_realization(sample):
+    with pytest.raises(TypeError, match="RayleighRealization"):
+        make_fiber([section(0., 2.)], rayleigh=sample)
+
+
+def test_with_rayleigh_returns_a_copy_and_can_replace_a_stored_sample():
+    point = lossless_reflector(1., .04)
+    base = make_fiber([section(0., 2.)], elements=[point])
+    built = base.with_rayleigh(7, cell_length=1.5)
+    changed = built.with_rayleigh(8, cell_length=1.5)
+    assert base.rayleigh is None
+    assert built is not base and changed is not built
+    assert built.sections[0] is base.sections[0]
+    assert built.elements[0] is point
+    assert built.rayleigh.extent == base.length
+    assert changed.rayleigh is not built.rayleigh
+    assert not np.array_equal(changed.rayleigh.coefficients, built.rayleigh.coefficients)
+
+
+def test_changing_section_rates_keeps_the_stored_sample():
+    built = make_fiber([section(0., 2.)]).with_rayleigh(7, cell_length=1.5)
+    changed = replace(built, sections=[section(0., 2., rayleigh=4e-8)])
+    assert changed.rayleigh is built.rayleigh
+
+
+def test_jax_attached_rayleigh_preserves_section_rate_derivatives():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", True)
+    try:
+        def local_reflection(rate):
+            fiber = make_fiber([section(0., 2., rayleigh=rate*1e-8)])
+            sample = rayleigh_from_normals(fiber, [[1., 2.], [3., -1.]],
+                                           cell_length=1.5, xp=jnp)
+            fiber = replace(fiber, rayleigh=sample)
+            return jnp.real(fiber.rayleigh.coefficients[0])
+
+        rate = jnp.asarray(2., dtype=jnp.float64)
+        value = jax.jit(local_reflection)(rate)
+        first = jax.jit(jax.grad(local_reflection))(rate)
+        second = jax.jit(jax.grad(jax.grad(local_reflection)))(rate)
+        expected = math.sqrt(1.5e-8)
+        np.testing.assert_allclose(value, expected, rtol=1e-14, atol=0.)
+        np.testing.assert_allclose(first, expected/4., rtol=1e-13, atol=0.)
+        np.testing.assert_allclose(second, -expected/16., rtol=1e-13, atol=0.)
+    finally:
+        jax.config.update("jax_enable_x64", previous)
 
 
 def test_jax_nested_element_parameters_remain_differentiable():
