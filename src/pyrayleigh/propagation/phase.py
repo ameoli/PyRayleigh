@@ -33,13 +33,16 @@ class OpticalPath:
         if not self.state.is_static:
             raise NotImplementedError("OpticalPath requires a static FiberState")
 
-    def _inputs(self, frequency, xp, extra=()):
+    def _parameters(self, frequency, extra=()):
         parameters = [frequency, *extra]
         for section in self.fiber.sections:
             parameters.extend(getattr(section.optics, name) for name in _GUIDE_PARAMETERS)
         for state_field in (self.state.axial_strain, self.state.temperature_change):
             parameters.extend(term.profile.values for term in state_field.terms)
-        xp, arrays = real_arrays(*parameters, xp=xp)
+        return parameters
+
+    def _inputs(self, frequency, xp, extra=()):
+        xp, arrays = real_arrays(*self._parameters(frequency, extra), xp=xp)
         return xp, arrays[0]
 
     def _piece_lengths(self, start, end, xp):

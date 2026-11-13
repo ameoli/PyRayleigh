@@ -39,7 +39,7 @@ Rayleigh sample storage and generation, spatial profiles, time histories
 and their composition into fields and a prescribed fiber state. Guide
 sensitivities describe the local coupling to strain and temperature.
 Static optical paths integrate phase, group delay and distributed loss through
-the sections.
+the sections. Point-reflector returns can be summed coherently.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -530,3 +530,31 @@ unchanged. Loss uses material lengths; the prescribed state changes the
 phase and delay. These factors describe distributed propagation. The
 scattering solver will combine discrete element coefficients separately;
 bend-loss models will follow.
+
+`point_response(fiber, frequency, state=None, xp=None)` gives the complex
+reflection at the left port from the fiber's discrete `PointReflector`
+elements, with one reflection per contribution:
+
+`H(nu) = sum_j r_left,j * prod_(k<j)(t_forward,k*t_reverse,k) * P_roundtrip(0,s_j,nu)`.
+
+```python
+from pyrayleigh import point_response
+
+reflected = point_response(fiber_with_points, probe.frequency)
+```
+
+`P_roundtrip` is the distributed field factor of `OpticalPath.round_trip`.
+Elements are already sorted by `Fiber`; each return crosses the preceding
+elements in both directions, while its own reflection uses `r_left`
+directly. Transmission products retain their complex phases, and a zero
+transmission blocks later returns without division. Points at either fiber
+end are supported. An empty element list gives zero reflection.
+
+The result has the frequency query's shape and complex128 dtype. Automatic
+namespace selection includes the frequency, guide and state values, section
+attenuation and the participating point coefficients. Use explicit `xp` for
+mixed NumPy/JAX arrays. For fitting, construct the fiber and elements inside
+the transformed function; coefficients and losses retain JAX derivatives.
+The state is static, as for `OpticalPath`. This step handles direct point
+returns; stored Rayleigh contributions and multiple-reflection paths will
+be added separately. Evaluation draws no random numbers.
