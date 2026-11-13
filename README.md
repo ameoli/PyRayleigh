@@ -42,6 +42,7 @@ Static optical paths integrate phase, group delay and distributed loss through
 the sections. Point-reflector and stored Rayleigh returns can be summed
 coherently.
 A response interface returns both reflection and direct transmission for a probe.
+Time-dependent states can be frozen at a chosen laboratory time.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -429,6 +430,33 @@ structure rather than numerical values. Evaluate each field through its
 selection. For JAX fitting, construct the state inside the transformed
 function. The state remains separate from `Probe`, whose times query its
 fields, and from `Fiber`, whose geometry and stored disorder remain fixed.
+
+`Field.at_time(time, xp=None)` returns a static field at one scalar laboratory
+time [s]. Each history is evaluated once and multiplied into its profile
+values; the resulting terms have no histories. Spatial knots, steps and
+exact spatial integrals are preserved. Static terms keep their values, and
+the result owns new profile arrays without changing the original field.
+`FiberState.at_time` freezes both prescribed fields at the same time.
+
+```python
+from pyrayleigh import compute_response
+
+frozen_state = state.at_time(.5)
+frozen_response = compute_response(fiber_generated, probe, frozen_state)
+```
+
+This evaluates the whole probe with the state frozen at `.5` s, regardless
+of any `probe.time` samples. It is a frozen-state approximation; propagation
+delays do not change the time at which the state is sampled.
+
+Automatic namespace selection considers the scalar time and all profile
+and history values, across both fields for `FiberState.at_time`. Explicit
+`xp` converts all output profiles, including static ones, to that namespace.
+Finite real scalar times are required; dtype and scalar shape are checked.
+For JAX fitting, construct the fields and snapshot inside the transformed
+function. Values and snapshot time retain derivatives, with time derivatives
+intended away from history sample times. The containers are not JAX pytrees;
+return numerical arrays or derived quantities from transformed functions.
 
 `GuideOptics` stores separate phase and group sensitivities, using the
 private model's names and defaults:

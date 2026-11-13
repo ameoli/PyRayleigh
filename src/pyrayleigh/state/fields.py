@@ -197,3 +197,17 @@ class Field:
         for term in self.terms:
             total = total + term.integral(position, time, xp=xp)
         return total
+
+    def at_time(self, time, *, xp=None):
+        """Static field at one scalar laboratory time [s], with native values."""
+        xp, _, time = _field_inputs(self.terms, 0., time, xp)
+        if time.ndim != 0:
+            raise ValueError("time must be a scalar")
+        terms = []
+        for term in self.terms:
+            _, (values,) = real_arrays(term.profile.values, xp=xp)
+            if term.history is not None:
+                values = values*term.history.value(time, xp=xp)
+            profile = SpatialProfile(term.profile.positions, values)
+            terms.append(FieldTerm(profile))
+        return Field(terms)
