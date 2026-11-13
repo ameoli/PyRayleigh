@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from pyrayleigh import Fiber, GuideOptics, Section, units
+from pyrayleigh import Fiber, GuideOptics, Section, lossless_reflector, units
 
 OPTICS = GuideOptics(193414489032258.06, 1.4682, 1.4682)
 
@@ -27,6 +27,7 @@ def test_single_section_fiber():
     assert fiber.length == 2.
     assert fiber.reference_temperature == 293.15
     assert fiber.frequency_min == 1.9e14
+    assert fiber.elements == ()
 
 
 def test_input_section_list_is_not_retained():
@@ -89,6 +90,72 @@ def test_boundary_roundoff_is_snapped_without_changing_inputs():
 def test_snapping_cannot_leave_an_empty_section():
     with pytest.raises(ValueError):
         make_fiber([section(0., 1.), section(1. - 5e-13, 1.)], length=1.)
+
+
+def test_elements_are_sorted_without_changing_the_input_objects():
+    points = [lossless_reflector(position, .04) for position in (2., 0., 1.)]
+    original = tuple(points)
+    fiber = make_fiber([section(0., 1.), section(1., 2.)], elements=points)
+    assert isinstance(fiber.elements, tuple)
+    assert [point.position for point in points] == [2., 0., 1.]
+    assert all(actual is expected for actual, expected in
+               zip(fiber.elements, (original[1], original[2], original[0])))
+    points.clear()
+    assert len(fiber.elements) == 3
+    assert fiber.elements[0].r_left is original[1].r_left
+    assert fiber.elements[-1].t_left_to_right is original[0].t_left_to_right
+
+
+@pytest.mark.parametrize("position", [2.1, np.nextafter(2., np.inf)])
+def test_elements_beyond_the_fiber_are_rejected(position):
+    with pytest.raises(ValueError, match="beyond"):
+        make_fiber([section(0., 2.)], elements=[lossless_reflector(position, .04)])
+
+
+@pytest.mark.parametrize("position", [0., 1., 2.])
+def test_coincident_elements_are_rejected(position):
+    points = [lossless_reflector(position, .04), lossless_reflector(position, .01)]
+    with pytest.raises(ValueError, match="distinct"):
+        make_fiber([section(0., 2.)], elements=points)
+
+
+def test_nearby_elements_are_not_snapped_together():
+    points = [lossless_reflector(position, .04) for position in
+              (np.nextafter(1., 2.), 1.)]
+    fiber = make_fiber([section(0., 2.)], elements=points)
+    assert fiber.elements[0] is points[1]
+    assert fiber.elements[1] is points[0]
+    assert fiber.elements[0].position < fiber.elements[1].position
+
+
+@pytest.mark.parametrize("element", [None, .5, section(0., 2.)])
+def test_elements_must_be_point_reflectors(element):
+    with pytest.raises(TypeError, match="PointReflector"):
+        make_fiber([section(0., 2.)], elements=[element])
+
+
+def test_jax_nested_element_parameters_remain_differentiable():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", True)
+    try:
+        def local_reflected_field(reflectance):
+            points = [lossless_reflector(1.5, .01),
+                      lossless_reflector(.5, reflectance, .3)]
+            fiber = make_fiber([section(0., 2.)], elements=points)
+            return jnp.real(fiber.elements[0].scattering_matrix()[0, 0])
+
+        reflectance = jnp.asarray(.04, dtype=jnp.float64)
+        value = jax.jit(local_reflected_field)(reflectance)
+        first = jax.jit(jax.grad(local_reflected_field))(reflectance)
+        second = jax.jit(jax.grad(jax.grad(local_reflected_field)))(reflectance)
+        cosine = math.cos(.3)
+        np.testing.assert_allclose(value, .2*cosine, rtol=1e-14, atol=0.)
+        np.testing.assert_allclose(first, cosine/.4, rtol=1e-13, atol=0.)
+        np.testing.assert_allclose(second, -cosine/.032, rtol=1e-13, atol=0.)
+    finally:
+        jax.config.update("jax_enable_x64", previous)
 
 
 def test_jax_nested_section_parameters_remain_differentiable():

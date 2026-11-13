@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 import math
 from numbers import Real
 
+from ..scattering import PointReflector
 from .section import Section
 
 SECTION_END_TOLERANCE = 1e-12
@@ -17,6 +18,7 @@ class Fiber:
     in absolute Hz. Sections must be ordered and cover [0, length].
     Small boundary round-off is snapped to the neighbouring section.
     Section parameters are retained as supplied, including JAX arrays.
+    Point elements have distinct positions in [0, length] and are sorted.
     """
 
     fiber_id: str
@@ -25,6 +27,7 @@ class Fiber:
     frequency_min: float
     frequency_max: float
     sections: tuple
+    elements: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.fiber_id, str):
@@ -40,6 +43,7 @@ class Fiber:
         if self.frequency_min >= self.frequency_max:
             raise ValueError("frequency_min must be smaller than frequency_max")
         self._check_sections()
+        self._check_elements()
 
     def _check_sections(self):
         sections = list(self.sections)
@@ -62,3 +66,16 @@ class Fiber:
         if sections[-1].end != self.length:
             sections[-1] = replace(sections[-1], end=self.length)
         object.__setattr__(self, "sections", tuple(sections))
+
+    def _check_elements(self):
+        elements = tuple(self.elements)
+        for element in elements:
+            if not isinstance(element, PointReflector):
+                raise TypeError("elements must contain only PointReflector objects")
+            if element.position > self.length:
+                raise ValueError("element position lies beyond the fiber length")
+        elements = tuple(sorted(elements, key=lambda element: element.position))
+        for left, right in zip(elements[:-1], elements[1:]):
+            if left.position == right.position:
+                raise ValueError("elements must have distinct positions")
+        object.__setattr__(self, "elements", elements)

@@ -187,5 +187,22 @@ The lossless factory uses `r_left = sqrt(R)*exp(i*phase)`,
 It requires `0 <= R <= 1`; derivatives use the smooth interior `0 < R < 1`.
 Both the factory and `scattering_matrix` accept explicit `xp` selection.
 Construct the element inside the transformed function when fitting R or
-phase. Point elements are standalone in this step; attachment to `Fiber`
-will be added separately. No random phase is drawn during evaluation.
+phase. No random phase is drawn during evaluation.
+
+`Fiber` accepts an optional `elements` sequence (empty by default). Point
+reflectors are stored as a tuple sorted by material position, retaining
+the supplied objects and their native coefficients. Positions must be
+distinct and inside `[0, length]`; both ends and section boundaries are
+allowed. Positions are fixed geometry, with no rounding to a spatial grid.
+
+```python
+from dataclasses import replace
+
+fiber_with_points = replace(fiber, elements=[point])
+first_point = fiber_with_points.elements[0]
+```
+
+Changing section properties does not create a point reflector. This step
+stores the elements in the layout; propagation and the full fiber response
+will be implemented separately. For JAX element parameters, construct the
+fiber inside the transformed function as for section parameters.
