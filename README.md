@@ -29,7 +29,8 @@ parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
-uniform sections, the built fiber layout, probe samples and point reflectors.
+uniform sections, the built fiber layout, probe samples, point reflectors
+and stored Rayleigh samples.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -206,3 +207,34 @@ Changing section properties does not create a point reflector. This step
 stores the elements in the layout; propagation and the full fiber response
 will be implemented separately. For JAX element parameters, construct the
 fiber inside the transformed function as for section parameters.
+
+`RayleighRealization` stores one local point coefficient per material cell.
+The complex coefficients describe reflection from the left, with propagation
+phase and attenuation applied separately. They must be finite with magnitude
+at most one; only numeric dtype and shape are checked here. They are copied
+as complex128 in their input namespace, retaining JAX derivatives.
+
+```python
+from pyrayleigh import RayleighRealization
+
+rayleigh = RayleighRealization(
+    coefficients=[1e-4 + 2e-4j, -3e-4j],
+    positions=[0., 1.],
+    edges=[0., 1., 1.25],
+)
+cell_lengths = rayleigh.cell_lengths()  # [1., .25] m
+```
+
+Positions and cell edges are fixed geometry in metres, supplied as Python
+or NumPy values. Their read-only NumPy copies are checked: edges start at
+zero and strictly increase; each coefficient has one position inside its
+own cell, including either edge. Explicit edges retain a partial final
+cell, and positions at the left edges can represent the PyOFDR lattice.
+`cell_count` and `extent` describe the layout; `cell_edges()` and
+`cell_lengths()` return new arrays of its geometry.
+
+For JAX coefficient derivatives, construct the realization inside the
+transformed function with a fixed layout. Geometry is not differentiated;
+native JAX geometry arrays are rejected rather than converted to NumPy.
+This step stores supplied samples without drawing random numbers. Generation
+and attachment to `Fiber` will be added separately.
