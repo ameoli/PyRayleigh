@@ -29,8 +29,8 @@ parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
-uniform sections, the built fiber layout and probe samples. Scattering
-models and propagation solvers will be added incrementally.
+uniform sections, the built fiber layout, probe samples and point reflectors.
+Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -166,3 +166,26 @@ arrays are rejected, so prepare both inputs in the intended namespace.
 JAX derivatives through either frequency or time are supported when the
 probe is constructed inside the transformed function. Passing the probe
 object itself as a JAX argument is not yet supported.
+
+`PointReflector` holds four field coefficients at a fixed material position
+[m]. Its local scattering matrix uses
+`[b_left, b_right] = S @ [a_left, a_right]` with
+`S = [[r_left, t_right_to_left], [t_left_to_right, r_right]]`.
+Coefficients are dimensionless and power normalized; propagation to the
+element is separate. The coefficients must be finite and passive. Only
+scalar numeric metadata is checked here, preserving native JAX parameters.
+
+```python
+from pyrayleigh import lossless_reflector
+
+point = lossless_reflector(position=5., reflectance=.04, phase=.3)
+scattering_matrix = point.scattering_matrix()
+```
+
+The lossless factory uses `r_left = sqrt(R)*exp(i*phase)`,
+`r_right = -conj(r_left)` and real `t = sqrt(1-R)` in both directions.
+It requires `0 <= R <= 1`; derivatives use the smooth interior `0 < R < 1`.
+Both the factory and `scattering_matrix` accept explicit `xp` selection.
+Construct the element inside the transformed function when fitting R or
+phase. Point elements are standalone in this step; attachment to `Fiber`
+will be added separately. No random phase is drawn during evaluation.

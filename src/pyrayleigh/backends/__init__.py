@@ -26,12 +26,22 @@ def asarray(values, *, xp):
     return xp.astype(array, dtype, copy=False)
 
 
-def real_arrays(*values, xp=None):
-    """Real physical inputs in one namespace; Python values default to NumPy."""
+def _arrays(*values, xp=None):
     if xp is None:
         arrays = [value for value in values if apc.is_array_api_obj(value)]
         xp = array_namespace(*arrays) if arrays else numpy_api
-    arrays = tuple(asarray(value, xp=xp) for value in values)
+    return xp, tuple(asarray(value, xp=xp) for value in values)
+
+
+def real_arrays(*values, xp=None):
+    """Real physical inputs in one namespace; Python values default to NumPy."""
+    xp, arrays = _arrays(*values, xp=xp)
     if any(xp.isdtype(value.dtype, "complex floating") for value in arrays):
         raise TypeError("real values are required")
     return xp, arrays
+
+
+def complex_arrays(*values, xp=None):
+    """Physical inputs as complex128 arrays in one namespace."""
+    xp, arrays = _arrays(*values, xp=xp)
+    return xp, tuple(xp.astype(value, xp.complex128, copy=False) for value in arrays)
