@@ -3,7 +3,7 @@ import array_api_strict as strict
 import numpy as np
 import pytest
 
-from pyrayleigh import SpatialProfile
+from pyrayleigh import SpatialProfile, TimeHistory
 
 
 @pytest.fixture
@@ -124,3 +124,98 @@ def test_jax_phase_derivatives_in_values_and_query_position(jax_numpy):
     np.testing.assert_allclose(value, np.cos(.75), rtol=1e-14, atol=0.)
     np.testing.assert_allclose(gradient, -np.sin(.75)*phase_gradient, rtol=1e-13, atol=0.)
     np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-13, atol=1e-15)
+
+
+def test_time_history_interpolates_and_holds_end_values(xp):
+    values = xp.asarray([1., 3., 2.], dtype=xp.float64)
+    history = TimeHistory([-1., 0., 2.], values)
+    time = xp.asarray([-2., -1., -.5, 0., 1., 2., 3.], dtype=xp.float64)
+    actual = history.value(time)
+    assert actual.dtype == xp.float64
+    assert type(history.values) is type(values)
+    np.testing.assert_array_equal(np.asarray(actual), [1., 1., 2., 3., 2.5, 2., 2.])
+
+
+@pytest.mark.parametrize("shape", [(), (2, 3), (0,)])
+def test_time_history_preserves_query_shape(xp, shape):
+    history = TimeHistory([0., 2.], xp.asarray([1., 3.]))
+    actual = history.value(xp.full(shape, 1., dtype=xp.float64))
+    assert actual.shape == shape
+    assert actual.dtype == xp.float64
+    np.testing.assert_array_equal(np.asarray(actual), np.full(shape, 2.))
+
+
+def test_single_time_sample_is_constant(xp):
+    history = TimeHistory([1.], xp.asarray([-2.]))
+    time = xp.asarray([-10., 1., 10.], dtype=xp.float64)
+    np.testing.assert_array_equal(np.asarray(history.value(time)), [-2., -2., -2.])
+
+
+def test_history_copies_inputs_and_keeps_times_read_only():
+    times = np.array([0., 2.])
+    values = np.array([1., 3.])
+    history = TimeHistory(times, values)
+    times[:] = 5.
+    values[:] = 5.
+    np.testing.assert_array_equal(history.times, [0., 2.])
+    np.testing.assert_array_equal(history.values, [1., 3.])
+    with pytest.raises(ValueError):
+        history.times[0] = 1.
+
+
+@pytest.mark.parametrize("times,values,error", [
+    ([], [], ValueError), ([0., 0.], [1., 2.], ValueError),
+    ([1., 0.], [1., 2.], ValueError), ([float("inf")], [1.], ValueError),
+    ([float("nan")], [1.], ValueError), ([0., 1.], [1.], ValueError),
+    ([0., 1.], [[1., 2.]], ValueError), ([False], [1.], TypeError),
+    ([[0., 1.]], [1., 2.], TypeError), ([0.], [1j], TypeError),
+    ([0.], [True], TypeError),
+])
+def test_invalid_time_history_data(times, values, error):
+    with pytest.raises(error):
+        TimeHistory(times, values)
+
+
+def test_native_jax_sample_times_are_rejected_without_detaching_them(jax_numpy):
+    with pytest.raises(TypeError, match="fixed real"):
+        TimeHistory(jax_numpy.asarray([0., 1.]), [1., 2.])
+
+
+def test_numpy_history_and_jax_time_need_explicit_namespace(jax_numpy):
+    history = TimeHistory([0., 2.], [1., 3.])
+    time = jax_numpy.asarray(1.)
+    with pytest.raises(TypeError):
+        history.value(time)
+    actual = history.value(time, xp=jax_numpy)
+    assert actual.dtype == jax_numpy.float64
+    np.testing.assert_allclose(actual, 2., rtol=1e-14, atol=0.)
+
+
+def test_jax_history_phase_derivatives_in_values_and_query_time(jax_numpy):
+    import jax
+    def returned_field(parameters):
+        history = TimeHistory([-1., 1.], parameters[:2]*1e-6)
+        phase = 1e6*history.value(parameters[2])
+        return jax_numpy.real(jax_numpy.exp(-1j*phase))
+    parameters = jax_numpy.asarray([1., 3., 0.], dtype=jax_numpy.float64)
+    value = jax.jit(returned_field)(parameters)
+    gradient = jax.jit(jax.grad(returned_field))(parameters)
+    hessian = jax.jit(jax.hessian(returned_field))(parameters)
+    phase_gradient = np.array([.5, .5, 1.])
+    phase_hessian = np.array([[0., 0., -.5], [0., 0., .5], [-.5, .5, 0.]])
+    expected_hessian = (-np.cos(2.)*np.outer(phase_gradient, phase_gradient)
+                        - np.sin(2.)*phase_hessian)
+    np.testing.assert_allclose(value, np.cos(2.), rtol=1e-14, atol=0.)
+    np.testing.assert_allclose(gradient, -np.sin(2.)*phase_gradient, rtol=1e-13, atol=0.)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-13, atol=1e-15)
+
+
+@pytest.mark.parametrize("time", [-2., 2.])
+def test_jax_history_is_constant_outside_the_sampled_interval(jax_numpy, time):
+    import jax
+    history = TimeHistory([-1., 1.], jax_numpy.asarray([1., 3.]))
+    query = jax_numpy.asarray(time, dtype=jax_numpy.float64)
+    first = jax.jit(jax.grad(history.value))(query)
+    second = jax.jit(jax.grad(jax.grad(history.value)))(query)
+    np.testing.assert_array_equal(first, 0.)
+    np.testing.assert_array_equal(second, 0.)

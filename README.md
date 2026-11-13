@@ -35,7 +35,7 @@ remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
 uniform sections, the built fiber layout, probe samples, point reflectors,
-Rayleigh sample storage and generation, and spatial profiles.
+Rayleigh sample storage and generation, spatial profiles and time histories.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -336,5 +336,30 @@ optional `xp`; automatic namespace selection considers both values and
 queries. Select JAX explicitly when the stored values are NumPy arrays.
 Construct the profile inside the transformed function when fitting its
 values. JAX derivatives in values and query position are supported; position
-derivatives are intended away from the knots. Time histories and their
-composition into `FiberState` will follow separately.
+derivatives are intended away from the knots.
+
+`TimeHistory(times, values)` describes prescribed samples in laboratory
+time [s]. Times are fixed finite Python or NumPy values, strictly increasing,
+with at least one sample. Values interpolate linearly between samples;
+outside that interval the first or last value is held constant. One sample
+therefore describes a constant history.
+
+```python
+from pyrayleigh import TimeHistory
+
+history = TimeHistory([0., 1., 3.], [1., 3., 2.])
+time_factors = history.value([-1., .5, 2., 4.])  # [1., 2., 2.5, 2.]
+```
+
+History values can be dimensionless multipliers of a spatial profile, or
+carry the field's unit when the spatial profile is a unit shape. Times are
+copied as read-only NumPy data. Values must be finite real inputs; only
+dtype and matching shape are checked, and float64 copies keep their native
+namespace. `value(time, xp=None)` preserves the query shape and selects the
+namespace from both stored values and queries, as for `SpatialProfile`.
+
+For JAX fitting, construct the history inside the transformed function.
+Values and query time are differentiable, with time derivatives intended
+away from the sample times. These are sampled, linearly interpolated
+histories. Composition with spatial profiles and `FiberState` will follow
+separately.

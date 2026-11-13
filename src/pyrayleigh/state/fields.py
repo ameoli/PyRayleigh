@@ -1,4 +1,4 @@
-"""Scalar profiles along the material coordinate of the fiber."""
+"""Scalar profiles along the fiber and sampled histories in laboratory time."""
 
 from dataclasses import dataclass, field
 from numbers import Real
@@ -74,3 +74,48 @@ class SpatialProfile:
 
     def __repr__(self):
         return f"SpatialProfile(knot_count={len(self.positions)})"
+
+
+@dataclass(frozen=True, eq=False)
+class TimeHistory:
+    """Piecewise linear values in time, held constant outside the samples.
+
+    times [s] are fixed finite Python or NumPy values, strictly increasing.
+    There is at least one sample. Values can multiply a spatial profile or
+    carry the field's unit when that profile is a unit shape. They must be
+    finite; only real dtype and matching shape are checked here.
+    """
+
+    times: object = field(repr=False)
+    values: object = field(repr=False)
+
+    def __post_init__(self):
+        times = tuple(self.times)
+        if any(isinstance(value, bool) or not isinstance(value, Real) for value in times):
+            raise TypeError("times must contain fixed real Python or NumPy values")
+        times = np.array(times, dtype=np.float64)
+        if times.size < 1 or not np.all(np.isfinite(times)):
+            raise ValueError("times must contain at least one finite sample")
+        if np.any(np.diff(times) <= 0):
+            raise ValueError("times must be strictly increasing")
+        xp, (values,) = real_arrays(self.values)
+        if values.shape != times.shape:
+            raise ValueError("values must have one entry per time")
+        times.setflags(write=False)
+        object.__setattr__(self, "times", times)
+        object.__setattr__(self, "values", xp.asarray(values, copy=True))
+
+    def value(self, time, *, xp=None):
+        """Value at finite laboratory times [s], preserving the query shape."""
+        xp, (time, values) = real_arrays(time, self.values, xp=xp)
+        result = xp.ones_like(time)*values[0]
+        for index in range(len(self.times) - 1):
+            left, right = float(self.times[index]), float(self.times[index + 1])
+            fraction = xp.clip(time - left, 0., right - left) / (right - left)
+            here = values[index] + fraction*(values[index + 1] - values[index])
+            inside = (time >= left) & (time < right)
+            result = xp.where(inside, here, result)
+        return xp.where(time >= float(self.times[-1]), values[-1], result)
+
+    def __repr__(self):
+        return f"TimeHistory(sample_count={len(self.times)})"
