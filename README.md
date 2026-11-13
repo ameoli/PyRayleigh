@@ -36,7 +36,8 @@ remain fixed when taking derivatives.
 The current code provides numerical helpers, SI conversions, guide optics,
 uniform sections, the built fiber layout, probe samples, point reflectors,
 Rayleigh sample storage and generation, spatial profiles, time histories
-and their composition into fields and a prescribed fiber state.
+and their composition into fields and a prescribed fiber state. Guide
+sensitivities describe the local coupling to strain and temperature.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -424,3 +425,42 @@ structure rather than numerical values. Evaluate each field through its
 selection. For JAX fitting, construct the state inside the transformed
 function. The state remains separate from `Probe`, whose times query its
 fields, and from `Fiber`, whose geometry and stored disorder remain fixed.
+
+`GuideOptics` stores separate phase and group sensitivities, using the
+private model's names and defaults:
+
+| Parameter | Default | Unit |
+| --- | --- | --- |
+| `strain_phase_factor` | `0.78` | 1 |
+| `strain_group_factor` | `0.78` | 1 |
+| `temperature_phase_factor` | `6.621e-6` | 1/K |
+| `temperature_group_factor` | `6.621e-6` | 1/K |
+| `thermal_expansion` | `5.5e-7` | 1/K |
+
+The strain factors default to `1-p_e`, with `p_e = .22`. The temperature
+factors are at fixed **total** strain: `xi + p_e*alpha_L`, with
+`xi = 6.5e-6` [1/K]. Free heating supplies `epsilon_total = alpha_L*dT`,
+recovering the relative change `(xi + alpha_L)*dT`. A heated fiber with
+zero total axial strain instead represents fixed axial length.
+
+```python
+phase_change = guide.relative_phase_change(axial_strain=10e-6, temperature_change=1.)
+group_delay_change = guide.relative_group_delay_change(10e-6, 1.)
+```
+
+Both methods return a first-order relative change, without adding one.
+Phase sensitivity refers to `frequency_ref`; group sensitivity is the
+relative change of group delay per material length. Inputs broadcast,
+with optional `xp` selection from the state values and the relevant factors.
+Guide parameters are real scalar inputs, checked at construction and kept
+native. Finite values and the documented physical domains are required;
+numeric range checks are left out to preserve JAX differentiation.
+
+The factors are independent inputs. When changing physical `p_e`, `xi` or
+`alpha_L`, supply the corresponding phase and group factors together with
+`thermal_expansion`. For total strain `epsilon_mechanical + alpha_L*dT`,
+the phase law then recovers PyOFDR's
+`(1-p_e)*epsilon_mechanical + (xi+alpha_L)*dT`.
+Construct the guide inside the transformed function when fitting these
+parameters. Reference propagation and group-delay methods still describe
+the unperturbed guide; applying state fields along the fiber will follow.
