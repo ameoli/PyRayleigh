@@ -29,8 +29,8 @@ parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
-uniform sections and the built fiber layout. Scattering models and
-propagation solvers will be added incrementally.
+uniform sections, the built fiber layout and probe samples. Scattering
+models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -146,3 +146,23 @@ in Hz. Like section geometry, these metadata are fixed finite real numbers;
 all are positive and `frequency_min < frequency_max`. Construct the fiber
 inside the transformed function when fitting its sections' parameters;
 passing a fiber object as a JAX argument is not yet supported.
+
+`Probe(frequency, time=None)` describes where an interrogator requests the
+fiber response. Frequencies are absolute optical frequencies in Hz; optional
+times are in seconds and must have exactly the same shape. Scalars, matrices
+and empty arrays are accepted. A probe stores its own float64 copies in the
+input namespace, so changing the input arrays does not change the samples.
+
+```python
+from pyrayleigh import Probe
+
+probe = Probe([nu_ref - 1e9, nu_ref, nu_ref + 1e9], time=[0., .005, .01])
+sample_shape = probe.shape
+```
+
+The physical domain is positive finite frequencies and finite times; this
+container checks real numeric dtype and matching shapes. Mixed NumPy/JAX
+arrays are rejected, so prepare both inputs in the intended namespace.
+JAX derivatives through either frequency or time are supported when the
+probe is constructed inside the transformed function. Passing the probe
+object itself as a JAX argument is not yet supported.
