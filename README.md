@@ -41,6 +41,7 @@ sensitivities describe the local coupling to strain and temperature.
 Static optical paths integrate phase, group delay and distributed loss through
 the sections. Point-reflector and stored Rayleigh returns can be summed
 coherently.
+A response interface returns both reflection and direct transmission for a probe.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -588,5 +589,42 @@ Use `xp` explicitly for mixed NumPy/JAX inputs. For fitting, rebuild the
 sample from fixed normals inside the transformed function, or parameterize
 its coefficients directly, then attach it to the fiber. Native derivatives
 through the coherent sum and propagation are retained. The state remains
-static. The combined response interface and multiple-reflection paths will
-follow separately.
+static. Multiple-reflection paths will follow separately.
+
+`compute_response(fiber, probe, state=None, xp=None)` returns a `Response`
+with the private model's fields: `reflection`, `transmission` and `probe`.
+This first interface requires a `Probe` object and a static state. Both
+response arrays have the probe's shape and complex128 dtype. The original
+probe is retained, including optional laboratory times; a static state has
+the same response at every laboratory time for a given frequency.
+
+```python
+from pyrayleigh import compute_response
+
+response = compute_response(fiber_generated, probe)
+reflected_power_fraction = abs(response.reflection)**2
+transmitted_power_fraction = abs(response.transmission)**2
+```
+
+Reflection is the coherent sum of `point_response` and `rayleigh_response`.
+Transmission is the distributed one-way factor from 0 to `fiber.length`,
+times every element's `t_left_to_right`. It represents the unreflected
+forward path. The full distributed alpha is retained; stored Rayleigh
+coefficients add no separate transmission depletion. The approximation
+includes one reflection per return and the direct forward path; multiple
+reflections will be added separately.
+
+Amplitudes are dimensionless and power normalized for unit light launched
+at the left port. Propagation uses `exp(-i*phi)`, consistent with a temporal
+field convention `exp(+i*2*pi*nu*t)`. Reflection powers must be formed after
+summing the complex fields. The result owns copies of its response arrays;
+`Response.shape` follows the probe shape. Manual construction requires
+keyword `reflection` and `transmission` arrays with that exact shape.
+
+Namespace selection considers the probe frequencies and all participating
+guide, state, attenuation and scattering parameters. Select `xp` explicitly
+for mixed NumPy/JAX data. For JAX fitting, build the models and probe inside
+the transformed function, call `compute_response`, and return its arrays
+or quantities derived from them. Passing `Response` itself through JAX as
+an argument or return value is not yet supported. This interface evaluates
+the stored fiber without drawing new disorder.
