@@ -4,4 +4,5 @@ __version__ = "0.1.0.dev0"
 
 from .fiber import Fiber, GuideOptics, Section
 from .probe import Probe
-from .scattering import PointReflector, RayleighRealization, lossless_reflector
+from .scattering import (PointReflector, RayleighRealization, generate_rayleigh,
+                         lossless_reflector, rayleigh_from_normals)

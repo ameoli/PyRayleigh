@@ -30,7 +30,7 @@ remain fixed when taking derivatives.
 
 The current code provides numerical helpers, SI conversions, guide optics,
 uniform sections, the built fiber layout, probe samples, point reflectors
-and stored Rayleigh samples.
+and Rayleigh sample storage and generation.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -236,5 +236,47 @@ cell, and positions at the left edges can represent the PyOFDR lattice.
 For JAX coefficient derivatives, construct the realization inside the
 transformed function with a fixed layout. Geometry is not differentiated;
 native JAX geometry arrays are rejected rather than converted to NumPy.
-This step stores supplied samples without drawing random numbers. Generation
-and attachment to `Fiber` will be added separately.
+
+`generate_rayleigh` draws a sample from the sections' Rayleigh coefficients:
+
+```python
+from pyrayleigh import generate_rayleigh
+
+rayleigh = generate_rayleigh(fiber, seed=1234, cell_length=1.)
+```
+
+The cell length [m] is explicit fixed geometry. To reproduce the PyOFDR
+grid, choose it once as `c/(2*n*bandwidth)` from the reference fiber and
+the optical bandwidth. Positions are the left cell edges, and the last
+cell ends at the fiber length. Round-off at that end does not create an
+empty cell. R is sampled at each left edge, including
+for cells crossing a section boundary, rather than averaged over the cell.
+The local coefficient is `sqrt(R*ds/2)*(X + i*Y)`: independent standard
+normal draws give ensemble power `E[abs(r)**2] = R*ds`.
+
+A private NumPy PCG64 generator draws all real parts followed by all
+imaginary parts, as in PyOFDR. It leaves the global random state unchanged
+and uses the same draws across backends. The seed identifies this stream;
+per-core seed derivation belongs to the caller. Store the actual sample:
+NumPy does not guarantee identical normal draws across versions.
+
+For fitting, draw the normals once and reuse `rayleigh_from_normals` while
+changing the sections' R values. It performs no random draws:
+
+```python
+import numpy as np
+from pyrayleigh import rayleigh_from_normals
+
+rng = np.random.default_rng(1234)
+normals = np.stack((rng.standard_normal(rayleigh.cell_count),
+                    rng.standard_normal(rayleigh.cell_count)), axis=1)
+rayleigh_jax = rayleigh_from_normals(fiber, normals, cell_length=1., xp=jnp)
+```
+
+The normals have shape `(cell_count, 2)`, with real and imaginary columns.
+Both functions accept explicit `xp` selection. `rayleigh_from_normals`
+otherwise infers it from the normals and section rates; select JAX explicitly
+when reusing NumPy draws with JAX rates. Construct the fiber and sample
+inside the transformed function, with fixed draws and cell length. Rates
+must be finite and nonnegative, with `R*ds << 1` for weak scattering;
+derivatives in R use `R > 0`. Attachment to `Fiber` will be added separately.
