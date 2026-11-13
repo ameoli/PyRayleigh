@@ -36,7 +36,7 @@ remain fixed when taking derivatives.
 The current code provides numerical helpers, SI conversions, guide optics,
 uniform sections, the built fiber layout, probe samples, point reflectors,
 Rayleigh sample storage and generation, spatial profiles, time histories
-and their composition into fields.
+and their composition into fields and a prescribed fiber state.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -394,4 +394,33 @@ the term tuple is empty; zero-valued terms are retained. These flags inspect
 structure, preserving native trainable values. For JAX fitting, construct
 the terms and field inside the transformed function. Values, spatial
 integrals and their derivatives remain native through the composition.
-`FiberState` and the optical coupling of these fields will follow separately.
+
+`FiberState` collects the prescribed fields separately from the built fiber.
+This step includes `axial_strain` [1] and `temperature_change` [K], both
+explicit `Field` objects. Defaults are empty zero fields. Inputs are keyword
+only and retained as supplied, including their native trainable values.
+
+```python
+from pyrayleigh import FiberState
+
+state = FiberState(axial_strain=strain_field)
+state_strain = state.axial_strain.value([.5, 2.], time=[0., 1.])
+```
+
+As in the private model, axial strain means the **total** strain of the
+fiber axis, including thermal expansion. A free heated fiber has
+`axial_strain = alpha_L * temperature_change`. Temperature change means
+`T - fiber.reference_temperature`.
+
+To reproduce PyOFDR's current additive strain and temperature model, the
+planned integration must form `epsilon_total = epsilon_mechanical + alpha_L*dT`
+with matching optical coefficients, so thermal expansion is counted once.
+`FiberState` stores the supplied fields; the optical coupling and the
+mechanical transfer from host to fiber will be implemented separately.
+
+`is_static` is true when neither field contains a time history, based on
+structure rather than numerical values. Evaluate each field through its
+`value` and `integral` methods, with the same broadcasting and optional `xp`
+selection. For JAX fitting, construct the state inside the transformed
+function. The state remains separate from `Probe`, whose times query its
+fields, and from `Fiber`, whose geometry and stored disorder remain fixed.
