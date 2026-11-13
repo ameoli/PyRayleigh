@@ -28,9 +28,9 @@ float64 and complex128. Random realizations will be drawn once and reused;
 parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
-The current code provides numerical helpers, SI conversions, guide optics
-and uniform fiber sections. Scattering models and propagation solvers will
-be added incrementally.
+The current code provides numerical helpers, SI conversions, guide optics,
+uniform sections and the built fiber layout. Scattering models and
+propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -125,3 +125,24 @@ splice or reflection at their boundary; those will be explicit elements.
 For JAX coefficient derivatives, construct the section inside the transformed
 function with fixed geometry. Passing a section object as a JAX argument is
 not yet supported.
+
+`Fiber` collects ordered sections covering the material interval `[0, length]`.
+Its identifier, length, reference temperature and declared optical band are
+fixed metadata, independent of the interrogator and of the prescribed state.
+Sections are stored as a tuple; gaps, overlaps and incomplete coverage are
+rejected. Boundary differences up to `1e-12 * length` are snapped on copies
+of the affected sections, retaining their native optical parameters.
+
+```python
+from pyrayleigh import Fiber
+
+fiber = Fiber("spool-1", length=10., reference_temperature=293.15,
+              frequency_min=nu_ref - 50e9, frequency_max=nu_ref + 50e9,
+              sections=[section])
+```
+
+Reference temperature is in K and the band uses absolute optical frequencies
+in Hz. Like section geometry, these metadata are fixed finite real numbers;
+all are positive and `frequency_min < frequency_max`. Construct the fiber
+inside the transformed function when fitting its sections' parameters;
+passing a fiber object as a JAX argument is not yet supported.
