@@ -44,6 +44,7 @@ coherently.
 A response interface returns both reflection and direct transmission for a probe.
 Time-dependent states can be frozen at one laboratory time or sampled at
 each probe time with the same frozen-state approximation.
+Static effective-index perturbations can be stored with the built fiber.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -346,6 +347,26 @@ Construct the profile inside the transformed function when fitting its
 values. JAX derivatives in values and query position are supported; position
 derivatives are intended away from the knots.
 
+`Fiber.index_perturbation` optionally stores a `SpatialProfile` of static
+effective-index changes `delta_n_eff(s)` [1], as in the private model.
+The default is `None`. The supplied profile is retained with its native
+values; only the part inside a traversed fiber interval contributes.
+
+```python
+from dataclasses import replace
+from pyrayleigh import compute_response
+
+index_profile = SpatialProfile([0., fiber_generated.length], [0., 2e-6])
+fiber_with_index = replace(fiber_generated, index_perturbation=index_profile)
+index_response = compute_response(fiber_with_index, probe)
+```
+
+This is a small additive index perturbation on the fixed material geometry.
+Its exact profile integral changes phase and group delay, alongside strain
+and temperature. It is part of the built fiber and stays the same when the
+state varies in time. Attaching it retains the stored Rayleigh realization
+and point coefficients; response evaluation draws no additional disorder.
+
 `TimeHistory(times, values)` describes prescribed samples in laboratory
 time [s]. Times are fixed finite Python or NumPy values, strictly increasing,
 with at least one sample. Values interpolate linearly between samples;
@@ -513,8 +534,10 @@ delay = path.group_delay(0., fiber.length, probe.frequency)
 
 Within each traversed section, let `d` be its traversed length and `dW` the
 exact field integrals over that interval. The phase and group lengths are
-`Lp = d + Kp_strain*dW_strain + Kp_temperature*dW_temperature` and
-`Lg = d + Kg_strain*dW_strain + Kg_temperature*dW_temperature`. The one-way
+`Lp = d + Kp_strain*dW_strain + Kp_temperature*dW_temperature + dW_index/n_eff` and
+`Lg = d + Kg_strain*dW_strain + Kg_temperature*dW_temperature + dW_index/n_g`.
+Here `dW_index` is the integral of `fiber.index_perturbation`, or zero when
+absent. These index weights follow the private separable model. The one-way
 phase is the sum of `beta_ref*Lp + (beta(nu)-beta_ref)*Lg`; the group delay
 is the sum of `beta'(nu)*Lg`. Sensitivities belong to each section, so a
 profile crossing a boundary gets the weights of both traversed sections.
@@ -527,12 +550,12 @@ Frequencies are finite positive Hz within the declared optical band;
 only real dtype is checked here, preserving native JAX queries.
 
 All three methods accept `xp`; automatic selection considers frequency,
-guide parameters and state values. Select JAX explicitly when mixing NumPy
+guide parameters, state and index-profile values. Select JAX explicitly when mixing NumPy
 constants and JAX arrays. Construct the path inside the transformed function
-when fitting its guide or state. Endpoints remain fixed geometry.
+when fitting its guide, state or index profile. Endpoints remain fixed geometry.
 This step handles static states; a state with a time history raises
-`NotImplementedError`. Scattering amplitudes and the complete fiber response
-will be added separately.
+`NotImplementedError`. The response functions below reuse this static path,
+including when `compute_response` freezes a varying state at each sample.
 
 `OpticalPath.attenuation_integral(position, frequency)` returns cumulative
 distributed power loss `A = int_0^position alpha ds` [1]. Each constant

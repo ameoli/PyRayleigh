@@ -5,6 +5,7 @@ import math
 from numbers import Real
 
 from ..scattering import PointReflector, RayleighRealization, generate_rayleigh
+from ..state.fields import SpatialProfile
 from .section import Section
 
 SECTION_END_TOLERANCE = 1e-12
@@ -20,6 +21,7 @@ class Fiber:
     Section parameters are retained as supplied, including JAX arrays.
     Point elements have distinct positions in [0, length] and are sorted.
     An optional stored Rayleigh sample covers exactly [0, length].
+    index_perturbation is an optional static delta n_eff(s) profile.
     """
 
     fiber_id: str
@@ -30,6 +32,7 @@ class Fiber:
     sections: tuple
     elements: tuple = ()
     rayleigh: RayleighRealization | None = None
+    index_perturbation: SpatialProfile | None = None
 
     def __post_init__(self):
         if not isinstance(self.fiber_id, str):
@@ -48,6 +51,9 @@ class Fiber:
         self._check_elements()
         if self.rayleigh is not None:
             self._check_rayleigh()
+        if (self.index_perturbation is not None
+                and not isinstance(self.index_perturbation, SpatialProfile)):
+            raise TypeError("index_perturbation must be a SpatialProfile or None")
 
     def _check_sections(self):
         sections = list(self.sections)

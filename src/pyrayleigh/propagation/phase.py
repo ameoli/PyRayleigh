@@ -35,6 +35,8 @@ class OpticalPath:
 
     def _parameters(self, frequency, extra=()):
         parameters = [frequency, *extra]
+        if self.fiber.index_perturbation is not None:
+            parameters.append(self.fiber.index_perturbation.values)
         for section in self.fiber.sections:
             parameters.extend(getattr(section.optics, name) for name in _GUIDE_PARAMETERS)
         for state_field in (self.state.axial_strain, self.state.temperature_change):
@@ -69,6 +71,13 @@ class OpticalPath:
                                              optics.temperature_group_factor, xp=xp)
             phase_length = (high - low) + sp*strain + tp*temperature
             group_length = (high - low) + sg*strain + tg*temperature
+            if self.fiber.index_perturbation is not None:
+                profile = self.fiber.index_perturbation
+                index_integral = profile.integral(high, xp=xp) - profile.integral(low, xp=xp)
+                _, (phase_index, group_index) = real_arrays(
+                    optics.effective_index, optics.group_index, xp=xp)
+                phase_length = phase_length + index_integral/phase_index
+                group_length = group_length + index_integral/group_index
             yield optics, phase_length, group_length
 
     def _phase_parts(self, start, end, frequency, xp):
