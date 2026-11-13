@@ -42,7 +42,8 @@ Static optical paths integrate phase, group delay and distributed loss through
 the sections. Point-reflector and stored Rayleigh returns can be summed
 coherently.
 A response interface returns both reflection and direct transmission for a probe.
-Time-dependent states can be frozen at a chosen laboratory time.
+Time-dependent states can be frozen at one laboratory time or sampled at
+each probe time with the same frozen-state approximation.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -621,10 +622,9 @@ static. Multiple-reflection paths will follow separately.
 
 `compute_response(fiber, probe, state=None, xp=None)` returns a `Response`
 with the private model's fields: `reflection`, `transmission` and `probe`.
-This first interface requires a `Probe` object and a static state. Both
-response arrays have the probe's shape and complex128 dtype. The original
-probe is retained, including optional laboratory times; a static state has
-the same response at every laboratory time for a given frequency.
+This interface requires a `Probe` object. Both response arrays have the
+probe's shape and complex128 dtype. The original probe is retained. A static
+state has the same response at every laboratory time for a given frequency.
 
 ```python
 from pyrayleigh import compute_response
@@ -633,6 +633,23 @@ response = compute_response(fiber_generated, probe)
 reflected_power_fraction = abs(response.reflection)**2
 transmitted_power_fraction = abs(response.transmission)**2
 ```
+
+For a time-varying state, every sample needs `probe.time`. Sample `m` uses
+the static response at `probe.frequency[m]` with `state.at_time(probe.time[m])`.
+This follows the private model's `per_sample` default: the whole fiber is
+frozen at that sample's time throughout propagation. It includes no sampling
+of the state at different times along the outbound and return paths.
+
+```python
+timed_probe = Probe([nu_ref, nu_ref], time=[0., 1.])
+timed_response = compute_response(fiber_generated, timed_probe, state)
+```
+
+Scalar, multidimensional and empty probes retain their original shapes.
+The direct implementation loops over samples, reusing the stored Rayleigh
+realization without redrawing it. To freeze a whole probe at one chosen
+instant, pass `state.at_time(t)` explicitly. `OpticalPath`, `point_response`
+and `rayleigh_response` still take static states.
 
 Reflection is the coherent sum of `point_response` and `rayleigh_response`.
 Transmission is the distributed one-way factor from 0 to `fiber.length`,
@@ -649,10 +666,13 @@ summing the complex fields. The result owns copies of its response arrays;
 `Response.shape` follows the probe shape. Manual construction requires
 keyword `reflection` and `transmission` arrays with that exact shape.
 
-Namespace selection considers the probe frequencies and all participating
-guide, state, attenuation and scattering parameters. Select `xp` explicitly
+Namespace selection considers the probe frequencies, the times used by a
+varying state, and all participating guide, state, attenuation and scattering
+parameters, including history values. Select `xp` explicitly
 for mixed NumPy/JAX data. For JAX fitting, build the models and probe inside
 the transformed function, call `compute_response`, and return its arrays
 or quantities derived from them. Passing `Response` itself through JAX as
-an argument or return value is not yet supported. This interface evaluates
-the stored fiber without drawing new disorder.
+an argument or return value is not yet supported. History values, profiles
+and probe times retain JAX derivatives; time derivatives are intended away
+from history knots. This interface evaluates the stored fiber without drawing
+new disorder.

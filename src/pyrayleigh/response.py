@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 
-from .backends import complex_arrays
+from .backends import complex_arrays, real_arrays
 from .probe import Probe
 from .propagation import optical_path, point_response, rayleigh_response
+from .state import FiberState
 
 
 @dataclass(frozen=True, eq=False)
@@ -37,25 +38,56 @@ class Response:
 
 
 def compute_response(fiber, probe, state=None, *, xp=None):
-    """Static response: one reflection per path and unreflected transmission.
+    """One reflection per path and unreflected transmission at probe samples.
 
-    The reflected amplitudes are summed before taking any power. Forward
-    transmission crosses every point element once. Stored Rayleigh samples
-    leave this direct transmission unchanged, as in the current loss model.
+    A varying state is frozen at each probe.time sample, throughout that
+    sample's propagation. The original probe and stored disorder are kept.
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
-    path = optical_path(fiber, state)
+    state = FiberState() if state is None else state
+    if not isinstance(state, FiberState):
+        raise TypeError("state must be a FiberState")
+    if not state.is_static and probe.time is None:
+        raise ValueError("a time-varying state needs probe.time for every sample")
+    path = optical_path(fiber)
     parameters = [section.attenuation for section in fiber.sections]
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)
     for element in fiber.elements:
         parameters.extend((element.r_left, element.t_left_to_right, element.t_right_to_left))
+    for state_field in (state.axial_strain, state.temperature_change):
+        for term in state_field.terms:
+            parameters.append(term.profile.values)
+            if term.history is not None:
+                parameters.append(term.history.values)
+    if not state.is_static:
+        parameters.append(probe.time)
     xp, _ = complex_arrays(*path._parameters(probe.frequency, extra=parameters), xp=xp)
-    reflection = (point_response(fiber, probe.frequency, state, xp=xp)
-                  + rayleigh_response(fiber, probe.frequency, state, xp=xp))
-    transmission = path.transmission(0., fiber.length, probe.frequency, xp=xp)
+    if state.is_static:
+        reflection, transmission = _static_response(fiber, probe.frequency, state, xp)
+    else:
+        _, (frequency, time) = real_arrays(probe.frequency, probe.time, xp=xp)
+        frequency, time = xp.reshape(frequency, (-1,)), xp.reshape(time, (-1,))
+        reflected, transmitted = [], []
+        for index in range(frequency.shape[0]):
+            frozen = state.at_time(time[index], xp=xp)
+            r, t = _static_response(fiber, frequency[index], frozen, xp)
+            reflected.append(r)
+            transmitted.append(t)
+        reflection = (xp.reshape(xp.stack(reflected), probe.shape) if reflected
+                      else xp.zeros(probe.shape, dtype=xp.complex128))
+        transmission = (xp.reshape(xp.stack(transmitted), probe.shape) if transmitted
+                        else xp.zeros(probe.shape, dtype=xp.complex128))
+    return Response(probe, reflection=reflection, transmission=transmission)
+
+
+def _static_response(fiber, frequency, state, xp):
+    path = optical_path(fiber, state)
+    reflection = (point_response(fiber, frequency, state, xp=xp)
+                  + rayleigh_response(fiber, frequency, state, xp=xp))
+    transmission = path.transmission(0., fiber.length, frequency, xp=xp)
     for element in fiber.elements:
         _, (forward,) = complex_arrays(element.t_left_to_right, xp=xp)
         transmission = transmission*forward
-    return Response(probe, reflection=reflection, transmission=transmission)
+    return reflection, transmission
