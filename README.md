@@ -28,9 +28,9 @@ float64 and complex128. Random realizations will be drawn once and reused;
 parameter-dependent responses will be recomputed. Discrete layouts will
 remain fixed when taking derivatives.
 
-The current code provides numerical helpers, SI conversions and the reference
-dispersion of one guided mode. Fiber sections and scattering models will be
-added incrementally.
+The current code provides numerical helpers, SI conversions, guide optics
+and uniform fiber sections. Scattering models and propagation solvers will
+be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
 
@@ -103,3 +103,25 @@ import jax.numpy as jnp
 frequency = jnp.asarray(nu_ref + 1e9)
 beta_jax = guide.propagation_constant(frequency, xp=jnp)
 ```
+
+`Section` describes a fixed material interval with a guide, a constant power
+attenuation coefficient and a guided Rayleigh coefficient. Both coefficients
+are explicit, in 1/m. Their physical domain is finite and nonnegative; only
+their real scalar dtype/shape is checked here, preserving native JAX values.
+The geometry is validated as fixed real numbers with `0 <= start < end`.
+
+```python
+from pyrayleigh import Section
+
+section = Section(0., 10., guide, attenuation=alpha,
+                  rayleigh_coefficient=units.db_to_linear(-82.))
+length = section.length
+alpha_at_reference = section.attenuation_at(nu_ref)
+```
+
+`attenuation_at` returns the same coefficient with the frequency input's
+shape, with optional `xp` selection. Different sections do not imply a
+splice or reflection at their boundary; those will be explicit elements.
+For JAX coefficient derivatives, construct the section inside the transformed
+function with fixed geometry. Passing a section object as a JAX argument is
+not yet supported.
