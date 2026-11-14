@@ -48,6 +48,41 @@ def index_segments_profile(segments, *, xp=None):
     return SpatialProfile(positions, xp.stack(samples))
 
 
+def _profile_sides(profile, position, xp):
+    first = int(np.searchsorted(profile.positions, position, side="left"))
+    last = int(np.searchsorted(profile.positions, position, side="right"))
+    point = profile.value(position, xp=xp)
+    if first == last:
+        return point, point, point
+    _, (values,) = real_arrays(profile.values, xp=xp)
+    zero = xp.asarray(0., dtype=xp.float64)
+    left = values[first] if first > 0 else zero
+    right = values[last - 1] if last < len(profile.positions) else zero
+    return left, point, right
+
+
+def add_profiles(first, second, *, xp=None):
+    """Sum stored index profiles, preserving their spatial integrals.
+
+    Knots stay fixed and doubled, independent of their values. At an
+    interior support end the sum takes the right limit; the final point
+    of the combined support keeps the sum of the original point values.
+    """
+    if not isinstance(first, SpatialProfile) or not isinstance(second, SpatialProfile):
+        raise TypeError("first and second must be SpatialProfile objects")
+    xp, _ = real_arrays(0., first.values, second.values, xp=xp)
+    knots = np.union1d(first.positions, second.positions)
+    positions, values = [], []
+    for index, position in enumerate(knots):
+        position = float(position)
+        left1, point1, right1 = _profile_sides(first, position, xp)
+        left2, point2, right2 = _profile_sides(second, position, xp)
+        after = point1 + point2 if index == len(knots) - 1 else right1 + right2
+        positions.extend((position, position))
+        values.extend((left1 + left2, after))
+    return SpatialProfile(positions, xp.stack(values))
+
+
 def _sample_positions(length, sample_spacing):
     for name, value in (("length", length), ("sample_spacing", sample_spacing)):
         if isinstance(value, bool) or not isinstance(value, Real):

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pyrayleigh import (Fiber, GuideOptics, PointReflector, Probe, RayleighRealization,
-                        Section, compute_response, index_segments_profile,
+                        Section, SpatialProfile, add_profiles, compute_response, index_segments_profile,
                         ornstein_uhlenbeck_index_from_normals as index_from_normals,
                         ornstein_uhlenbeck_index_profile as index_profile)
 from pyrayleigh.constants import SPEED_OF_LIGHT
@@ -285,3 +285,111 @@ def test_jax_response_keeps_derivatives_of_zero_and_overlapping_segments(jax_num
     np.testing.assert_allclose(value, expected, rtol=1e-12, atol=1e-15)
     np.testing.assert_allclose(gradient, np.full(2, derivative), rtol=1e-10, atol=1e-14)
     np.testing.assert_allclose(hessian, np.full((2, 2), second), rtol=1e-10, atol=1e-14)
+
+
+def test_added_profiles_preserve_linear_pieces_steps_and_integrals(xp):
+    first = SpatialProfile([-1., 0., 0., 2.], xp.asarray([1., 2., 4., 6.])*1e-6)
+    second = SpatialProfile([.5, 1.5, 2.5], xp.asarray([2., -1., 1.])*1e-6)
+    combined = add_profiles(first, second)
+    assert combined.values.dtype == xp.float64
+    assert type(combined.values) is type(first.values)
+    position = xp.asarray([-2., -1., -.5, 0., .5, 1., 1.5, 1.75, 2.25, 2.5, 3.])
+    expected = np.asarray(first.value(position)) + np.asarray(second.value(position))
+    np.testing.assert_allclose(np.asarray(combined.value(position)), expected,
+                               rtol=1e-14, atol=1e-21)
+    position = xp.asarray([-2., -1., -.5, 0., .5, 1., 1.5, 2., 2.25, 2.5, 3.])
+    expected = np.asarray(first.integral(position)) + np.asarray(second.integral(position))
+    np.testing.assert_allclose(np.asarray(combined.integral(position)), expected,
+                               rtol=1e-14, atol=1e-21)
+
+
+def test_interior_support_ends_take_the_right_limit(xp):
+    first = SpatialProfile([0., 1.], xp.asarray([1., 1.]))
+    second = SpatialProfile([0., 2.], xp.asarray([1., 1.]))
+    combined = add_profiles(first, second)
+    position = xp.asarray([0., .5, 1., 1.5, 2., 2.1])
+    np.testing.assert_array_equal(np.asarray(combined.value(position)), [2., 2., 1., 1., 1., 0.])
+    np.testing.assert_array_equal(np.asarray(combined.integral(position)), [0., 1., 2., 2.5, 3., 3.])
+
+
+def test_disjoint_profiles_keep_the_gap_and_integrals_from_zero(xp):
+    first = SpatialProfile([-2., -1.], xp.asarray([1., 1.]))
+    second = SpatialProfile([1., 2.], xp.asarray([2., 2.]))
+    combined = add_profiles(first, second)
+    position = xp.asarray([-2., -1., -.5, 0., 1., 1.5, 2., 3.])
+    np.testing.assert_array_equal(np.asarray(combined.value(position)), [1., 0., 0., 0., 2., 2., 2., 0.])
+    np.testing.assert_array_equal(np.asarray(combined.integral(position)), [-1., 0., 0., 0., 0., 1., 2., 2.])
+
+
+def test_adding_a_zero_profile_preserves_values_and_integrals(xp):
+    first = SpatialProfile([-1., 1.], xp.asarray([1e-6, 2e-6]))
+    combined = add_profiles(first, index_segments_profile([], xp=xp))
+    position = xp.asarray([-2., -1., -.5, 0., .5, 1., 2.])
+    for name in ("value", "integral"):
+        np.testing.assert_allclose(np.asarray(getattr(combined, name)(position)),
+                                   np.asarray(getattr(first, name)(position)),
+                                   rtol=1e-14, atol=1e-21)
+
+
+def test_profiles_at_a_single_position_keep_the_final_point_but_no_area(xp):
+    first = SpatialProfile([.5, .5], xp.asarray([0., 3e-6]))
+    second = SpatialProfile([.5, .5], xp.asarray([0., -1e-6]))
+    combined = add_profiles(first, second)
+    position = xp.asarray([0., .5, 1.])
+    np.testing.assert_allclose(np.asarray(combined.value(position)), [0., 2e-6, 0.],
+                               rtol=1e-14, atol=1e-21)
+    np.testing.assert_array_equal(np.asarray(combined.integral(position)), [0., 0., 0.])
+
+
+def test_profile_addition_requires_two_spatial_profiles():
+    profile = SpatialProfile([0., 1.], [1., 1.])
+    for first, second in ((None, profile), (profile, None), (profile, [1., 1.])):
+        with pytest.raises(TypeError, match="SpatialProfile"):
+            add_profiles(first, second)
+
+
+def test_mixed_profiles_require_explicit_namespace_selection(jax_numpy):
+    first = SpatialProfile([0., 1.], [1e-6, 1e-6])
+    second = SpatialProfile([0., 2.], jax_numpy.asarray([2e-6, 2e-6]))
+    with pytest.raises(TypeError):
+        add_profiles(first, second)
+    combined = add_profiles(first, second, xp=jax_numpy)
+    assert type(combined.values) is type(second.values)
+    position = jax_numpy.asarray([.5, 1., 1.5])
+    np.testing.assert_allclose(np.asarray(combined.value(position)), [3e-6, 2e-6, 2e-6],
+                               rtol=1e-14, atol=1e-21)
+
+
+def test_jax_response_derivatives_through_added_segments_and_ou_profile(jax_numpy):
+    import jax
+    reference = SPEED_OF_LIGHT/1550e-9
+    guide = GuideOptics(reference, 1.4682, 1.4682)
+    length = SPEED_OF_LIGHT/(4.*guide.effective_index*reference)
+    normals = jax_numpy.asarray([1., .5])
+    def objective(parameters):
+        segment = index_segments_profile([(0., .75*length, parameters[0]*.01)])
+        disorder = index_from_normals(length, parameters[1]*.01, 10.*length, length, normals)
+        profile = add_profiles(segment, disorder)
+        sample = RayleighRealization(jax_numpy.asarray([.1]), [0.], [0., length])
+        fiber = Fiber("short", length, 293.15, reference - 50e9, reference + 50e9,
+                      [Section(0., length, guide, 0., 1e-8)],
+                      [PointReflector(length, .2, 0., .8, .7)], sample,
+                      index_perturbation=profile)
+        response = compute_response(fiber, Probe(jax_numpy.asarray(reference)))
+        return (jax_numpy.abs(response.reflection)**2
+                + .1*jax_numpy.real(response.transmission))
+    parameters = jax_numpy.asarray([0., 1.], dtype=jax_numpy.float64)
+    value = jax.jit(objective)(parameters)
+    gradient = jax.jit(jax.grad(objective))(parameters)
+    hessian = jax.jit(jax.hessian(objective))(parameters)
+    a = np.exp(-.1)
+    factor = 1. + a + .5*np.sqrt(1. - a*a)
+    derivative = np.pi/guide.effective_index*np.array([.0075, .005*factor])
+    phase = derivative[1]
+    expected = .05 - .04*np.cos(phase) - .08*np.sin(phase/2.)
+    first = .04*np.sin(phase) - .04*np.cos(phase/2.)
+    second = .04*np.cos(phase) + .02*np.sin(phase/2.)
+    np.testing.assert_allclose(value, expected, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(gradient, first*derivative, rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(hessian, second*np.outer(derivative, derivative),
+                               rtol=1e-10, atol=1e-14)
