@@ -1,4 +1,4 @@
-"""Empirical macrobend loss, with the same parameters as PyOFDR."""
+"""Macrobend power loss, with the same conventions as PyOFDR."""
 
 import math
 from numbers import Integral, Real
@@ -8,6 +8,7 @@ import numpy as np
 from ..backends import real_arrays
 from ..constants import SPEED_OF_LIGHT
 from ..fiber.loss import BendLossTable, _fixed_grid, _interpolate_nonnegative
+from .step_index import _cladding_bessel, solve_lp01_mode
 
 NOMINAL_FREQUENCY = SPEED_OF_LIGHT/1550e-9
 DEFAULT_TABLE_RADII = np.geomspace(100e-3, 1e-3, 200)
@@ -133,3 +134,65 @@ def tabulated_bend_loss_table(table_radii, table_loss_per_turn_db, points_per_in
     query = xp.asarray(dense.tolist(), dtype=xp.float64)
     dense_losses = _interpolate_nonnegative(radii, losses, query, xp)
     return per_turn_table(dense, dense_losses, frequency, xp=xp)
+
+
+def _marcuse_log_attenuation(frequency, core_radius, core_index, cladding_index,
+                              bend_radius, radius_factor, xp):
+    mode = solve_lp01_mode(frequency, core_radius, core_index, cladding_index, xp=xp)
+    beta = mode.propagation_constant
+    effective_radius = bend_radius*radius_factor
+    valid = (xp.isfinite(mode.U) & xp.isfinite(beta) & xp.isfinite(bend_radius)
+             & xp.isfinite(radius_factor) & xp.isfinite(effective_radius)
+             & (radius_factor > 0.) & (bend_radius > mode.core_radius)
+             & (effective_radius > mode.core_radius))
+    def safe(value):
+        return xp.where(valid, value, xp.ones_like(value))
+    log_a = xp.log(safe(mode.core_radius))
+    log_w = xp.log(safe(mode.W))
+    log_radius = xp.log(safe(effective_radius))
+    _, wk1 = _cladding_bessel(log_w, xp)
+    exponent = xp.exp(math.log(2./3.) + 3.*(log_w - log_a) + log_radius - 2.*xp.log(safe(beta)))
+    # Combine the W powers before taking logs of K1 at weak confinement.
+    log_rate = (.5*math.log(math.pi) - math.log(2.) + 2.*xp.log(safe(mode.U))
+                 + .5*(log_w - log_a - log_radius) - 2.*xp.log(safe(mode.V))
+                 - 2.*xp.log(wk1) - exponent)
+    return xp.where(valid, log_rate, xp.full_like(log_rate, float("nan")))
+
+
+def marcuse_bend_attenuation(frequency, core_radius, core_index, cladding_index,
+                             bend_radius, radius_factor=1.28, *, xp=None):
+    """Marcuse LP01 power alpha [1/m] along a physical bend radius [m].
+
+    Frequency is in Hz; the guide uses solve_lp01_mode's supported range.
+    Finite R > core_radius and radius_factor > 0 with R_eff > core_radius
+    are required. R_eff = R*radius_factor affects the radiation rate only.
+    All inputs broadcast and remain native; invalid geometry, unsupported
+    modes and overflowing rates give NaN. Numerical underflow gives zero.
+    """
+    xp, values = real_arrays(frequency, core_radius, core_index, cladding_index,
+                              bend_radius, radius_factor, xp=xp)
+    log_rate = _marcuse_log_attenuation(*values, xp)
+    rate = xp.exp(log_rate)
+    return xp.where(xp.isfinite(rate), rate, xp.full_like(rate, float("nan")))
+
+
+def marcuse_bend_loss_db(radius, turns, wavelength, core_radius, core_index, cladding_index,
+                         radius_correction=1.28, *, xp=None):
+    """Total one-way Marcuse LP01 loss [dB], with PyOFDR's argument convention.
+
+    Wavelength and radii are in m. Turns and wavelength must be finite and
+    strictly positive. The physical arc is 2*pi*radius*turns, without the
+    radius correction. Domain limits and NaN handling follow the rate
+    function. Total loss is evaluated in log form before exponentiating.
+    """
+    xp, (radius, turns, wavelength, a, n1, n2, correction) = real_arrays(
+        radius, turns, wavelength, core_radius, core_index, cladding_index, radius_correction, xp=xp)
+    valid = xp.isfinite(wavelength) & (wavelength > 0.) & xp.isfinite(turns) & (turns > 0.)
+    frequency = SPEED_OF_LIGHT/xp.where(valid, wavelength, xp.ones_like(wavelength))
+    log_rate = _marcuse_log_attenuation(frequency, a, n1, n2, radius, correction, xp)
+    safe_radius = xp.where(xp.isfinite(radius) & (radius > 0.), radius, xp.ones_like(radius))
+    safe_turns = xp.where(valid, turns, xp.ones_like(turns))
+    log_loss = (log_rate + math.log(10./math.log(10.)) + math.log(2.*math.pi)
+                 + xp.log(safe_radius) + xp.log(safe_turns))
+    loss = xp.exp(log_loss)
+    return xp.where(valid & xp.isfinite(loss), loss, xp.full_like(loss, float("nan")))
