@@ -12,7 +12,7 @@ def point_response(fiber, frequency, state=None, *, xp=None):
     is fixed; evaluation uses the supplied coefficients without mutation.
     """
     path = optical_path(fiber, state)
-    parameters = [section.attenuation for section in fiber.sections]
+    parameters = path.loss._parameters()
     for element in fiber.elements:
         parameters.extend((element.r_left, element.t_left_to_right, element.t_right_to_left))
     xp, _ = complex_arrays(*path._parameters(frequency, extra=parameters), xp=xp)
@@ -37,7 +37,7 @@ def rayleigh_response(fiber, frequency, state=None, *, xp=None):
     """
     path = optical_path(fiber, state)
     sample = fiber.rayleigh
-    parameters = [section.attenuation for section in fiber.sections]
+    parameters = path.loss._parameters()
     if sample is not None:
         parameters.append(sample.coefficients)
         for element in fiber.elements:

@@ -32,9 +32,6 @@ class OpticalPath:
             raise TypeError("state must be a FiberState")
         if not self.state.is_static:
             raise NotImplementedError("OpticalPath requires a static FiberState")
-        curved = not self.state.curvature_x.is_zero or not self.state.curvature_y.is_zero
-        if curved and any(section.optics.bend_loss is not None for section in self.fiber.sections):
-            raise NotImplementedError("bend-loss integration of curvature fields is not available yet")
 
     def _parameters(self, frequency, extra=()):
         parameters = [frequency, *extra]
@@ -115,15 +112,14 @@ class OpticalPath:
 
     @property
     def loss(self):
-        return FiberLoss(self.fiber)
+        return FiberLoss(self.fiber, self.state)
 
     def attenuation_integral(self, position, frequency, *, xp=None):
         """Cumulative distributed power loss A(position, frequency) [1]."""
         return self.loss.attenuation_integral(position, frequency, xp=xp)
 
     def _transmission(self, start, end, frequency, round_trip, xp):
-        rates = [section.attenuation for section in self.fiber.sections]
-        xp, frequency = self._inputs(frequency, xp, extra=rates)
+        xp, frequency = self._inputs(frequency, xp, extra=self.loss._parameters())
         phase = self.phase_factor(start, end, frequency, round_trip, xp=xp)
         loss = (self.attenuation_integral(end, frequency, xp=xp)
                 - self.attenuation_integral(start, frequency, xp=xp))

@@ -52,7 +52,7 @@ def compute_response(fiber, probe, state=None, *, xp=None):
     if not state.is_static and probe.time is None:
         raise ValueError("a time-varying state needs probe.time for every sample")
     path = optical_path(fiber)
-    parameters = [section.attenuation for section in fiber.sections]
+    parameters = path.loss._parameters()
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)
     for element in fiber.elements:
