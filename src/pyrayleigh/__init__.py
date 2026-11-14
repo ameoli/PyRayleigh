@@ -6,7 +6,8 @@ from .fiber import (BendLossTable, Fiber, GuideOptics, Section, add_profiles, in
                     ornstein_uhlenbeck_index_from_normals, ornstein_uhlenbeck_index_profile)
 from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
-from .propagation import OpticalPath, optical_path, point_response, rayleigh_response
+from .propagation import (OpticalPath, optical_path, point_reflection_paths,
+                           point_response, rayleigh_response)
 from .scattering import (PointReflector, RayleighRealization, WeakFBG, generate_rayleigh,
                          lossless_reflector, rayleigh_from_normals, weak_fbg_reflection)
 from .response import Response, compute_response
