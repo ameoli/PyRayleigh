@@ -1,17 +1,33 @@
 """Empirical macrobend loss, with the same parameters as PyOFDR."""
 
 import math
-from numbers import Real
+from numbers import Integral, Real
 
 import numpy as np
 
 from ..backends import real_arrays
 from ..constants import SPEED_OF_LIGHT
-from ..fiber.loss import BendLossTable, _fixed_grid
+from ..fiber.loss import BendLossTable, _fixed_grid, _interpolate_nonnegative
 
 NOMINAL_FREQUENCY = SPEED_OF_LIGHT/1550e-9
 DEFAULT_TABLE_RADII = np.geomspace(100e-3, 1e-3, 200)
 DEFAULT_TABLE_RADII.setflags(write=False)
+
+
+def _sorted_radii(radii):
+    radii = tuple(radii)
+    if any(isinstance(value, bool) or not isinstance(value, Real) for value in radii):
+        raise TypeError("bend_radii must contain fixed real Python or NumPy values")
+    order = sorted(range(len(radii)), key=radii.__getitem__)
+    return _fixed_grid([radii[index] for index in order], "bend_radii", 2), order
+
+
+def _turn_samples(radii, losses, xp):
+    radii, order = _sorted_radii(radii)
+    xp, (losses,) = real_arrays(losses, xp=xp)
+    if losses.shape != radii.shape:
+        raise ValueError("give one loss per turn for each radius")
+    return xp, radii, xp.stack([losses[index] for index in order])
 
 
 def bend_length(bend_radius, turns, *, xp=None):
@@ -45,6 +61,20 @@ def exponential_bend_loss_db(radius, turns, loss_per_turn_db=100., critical_radi
     return turns*amplitude*xp.exp(-radius/critical)
 
 
+def per_turn_table(radii, loss_per_turn_db, frequency=NOMINAL_FREQUENCY, *, xp=None):
+    """Convert fixed radius samples [m] and native losses [dB/turn] to alpha.
+
+    Radii are distinct and positive, in any order (at least two). Losses
+    are a finite nonnegative vector, one per radius. Only real dtype and
+    shape are checked. Alpha uses the physical length 2*pi*R of one turn;
+    zero and underflowed losses stay zero. Frequency is a fixed Hz label.
+    """
+    xp, radii, losses = _turn_samples(radii, loss_per_turn_db, xp)
+    lengths = bend_length(xp.asarray(radii.tolist(), dtype=xp.float64), 1., xp=xp)
+    alpha = attenuation_from_loss_db(losses, lengths, xp=xp)
+    return BendLossTable(1./radii[::-1], [frequency], xp.flip(alpha, axis=0)[:, None])
+
+
 def exponential_bend_loss_table(bend_radii=DEFAULT_TABLE_RADII, loss_per_turn_db=100.,
                                  critical_radius=5e-3, frequency=NOMINAL_FREQUENCY, *, xp=None):
     """Sample the empirical law into a frequency-independent BendLossTable.
@@ -59,15 +89,47 @@ def exponential_bend_loss_table(bend_radii=DEFAULT_TABLE_RADII, loss_per_turn_db
     For PyOFDR's arbitrary [start, end] spans, convert the total dB with
     attenuation_from_loss_db(total, end - start) instead.
     """
-    radii = tuple(bend_radii)
-    if any(isinstance(value, bool) or not isinstance(value, Real) for value in radii):
-        raise TypeError("bend_radii must contain fixed real Python or NumPy values")
-    radii = _fixed_grid(sorted(radii), "bend_radii", 2)[::-1]
+    radii, _ = _sorted_radii(bend_radii)
     xp, (amplitude, critical) = real_arrays(loss_per_turn_db, critical_radius, xp=xp)
     if amplitude.ndim != 0 or critical.ndim != 0:
         raise ValueError("loss_per_turn_db and critical_radius must be scalars")
     native_radii = xp.asarray(radii.tolist(), dtype=xp.float64)
     losses = exponential_bend_loss_db(native_radii, 1., amplitude, critical, xp=xp)
-    lengths = bend_length(native_radii, 1., xp=xp)
-    alpha = attenuation_from_loss_db(losses, lengths, xp=xp)
-    return BendLossTable(1./radii, [frequency], alpha[:, None])
+    return per_turn_table(radii, losses, frequency, xp=xp)
+
+
+def tabulated_bend_loss_db(radius, turns, table_radii, table_loss_per_turn_db, *, xp=None):
+    """Total one-way dB loss, log-linear in radius as in PyOFDR.
+
+    Table radii [m] are fixed, positive and distinct, in any order. Native
+    losses [dB/turn] are finite and strictly positive, one per radius;
+    only real dtype and shape are checked. Radius > 0 and turns >= 0
+    broadcast normally. End samples clamp outside the radius range,
+    without host-side range warnings, so JIT queries stay native.
+    """
+    xp, (radius, turns, losses) = real_arrays(radius, turns, table_loss_per_turn_db, xp=xp)
+    xp, radii, losses = _turn_samples(table_radii, losses, xp)
+    return turns*_interpolate_nonnegative(radii, losses, radius, xp)
+
+
+def tabulated_bend_loss_table(table_radii, table_loss_per_turn_db, points_per_interval=32,
+                              frequency=NOMINAL_FREQUENCY, *, xp=None):
+    """Resample the radius log-loss law into a frequency-independent table.
+
+    Same inputs as tabulated_bend_loss_db. Each radius interval has a fixed
+    positive integer number of subdivisions; original samples are retained.
+    Between resampled radii, curvature interpolation is an approximation.
+    The resulting table uses zero loss above the largest radius and NaN
+    below the smallest, following BendLossTable's curvature limits.
+    """
+    if isinstance(points_per_interval, bool) or not isinstance(points_per_interval, Integral):
+        raise TypeError("points_per_interval must be a fixed integer")
+    if points_per_interval < 1:
+        raise ValueError("points_per_interval must be positive")
+    xp, radii, losses = _turn_samples(table_radii, table_loss_per_turn_db, xp)
+    dense = np.unique(np.concatenate([
+        np.linspace(low, high, int(points_per_interval) + 1)[:-1]
+        for low, high in zip(radii[:-1], radii[1:])] + [radii[-1:]]))
+    query = xp.asarray(dense.tolist(), dtype=xp.float64)
+    dense_losses = _interpolate_nonnegative(radii, losses, query, xp)
+    return per_turn_table(dense, dense_losses, frequency, xp=xp)
