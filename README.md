@@ -45,6 +45,7 @@ A response interface returns both reflection and direct transmission for a probe
 Time-dependent states can be frozen at one laboratory time or sampled at
 each probe time with the same frozen-state approximation.
 Static effective-index perturbations can be stored with the built fiber.
+Stationary OU index profiles can be generated once or built from fixed normals.
 Further scattering models and propagation solvers will be added incrementally.
 
 Install the development dependencies, including the optional JAX backend:
@@ -366,6 +367,43 @@ Its exact profile integral changes phase and group delay, alongside strain
 and temperature. It is part of the built fiber and stays the same when the
 state varies in time. Attaching it retains the stored Rayleigh realization
 and point coefficients; response evaluation draws no additional disorder.
+
+`ornstein_uhlenbeck_index_profile(length, standard_deviation,
+correlation_length, sample_spacing, seed, xp=None)` builds a stored random
+index profile, following the private model. Length and sample spacing [m]
+are fixed positive geometry. Knots start at zero and end exactly at length;
+the final interval can be shorter. The seed is a fixed nonnegative integer
+for a private NumPy PCG64 stream, independent of the backend and global RNG.
+
+```python
+from pyrayleigh import ornstein_uhlenbeck_index_profile
+
+index_disorder = ornstein_uhlenbeck_index_profile(
+    fiber_generated.length, 1e-6, .1, .01, seed=27,
+)
+fiber_with_disorder = replace(fiber_generated, index_perturbation=index_disorder)
+```
+
+For each actual spacing `ds`, the transition is
+`dn_next = a*dn + sigma*sqrt(1-a*a)*eta`, with `a = exp(-ds/correlation_length)`.
+The first value is `sigma*eta[0]`, so the knot covariance is
+`sigma**2*exp(-abs(s-t)/correlation_length)`, as for PyOFDR's OU construction.
+The profile is linearly interpolated between knots, as in the private model.
+At fraction `u` of an interval, its variance is reduced by the factor
+`1 - 2*u*(1-u)*(1-exp(-ds/correlation_length))`; it is not an OU bridge.
+Choose spacing at most `correlation_length/4`, and finer when needed.
+This criterion applies across the parameter range of a fit; the grid stays fixed.
+The phase integrates this linear profile, whereas PyOFDR uses constant cells.
+
+For fitting, `ornstein_uhlenbeck_index_from_normals` takes the same first
+four arguments and a real vector of fixed independent `N(0, 1)` samples
+instead of the seed. It needs one sample per knot, including both ends,
+and draws no random numbers. Build and attach this profile inside the JAX
+transformed function; sigma, correlation length and supplied normals retain
+derivatives. Sigma must be finite and nonnegative, correlation length finite
+and positive; native parameters are checked for real dtype and scalar shape.
+Both builders return native float64 values, with optional `xp` selection.
+Mixed NumPy/JAX inputs to the fixed-normal builder need explicit `xp`.
 
 `TimeHistory(times, values)` describes prescribed samples in laboratory
 time [s]. Times are fixed finite Python or NumPy values, strictly increasing,
