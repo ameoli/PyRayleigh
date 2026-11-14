@@ -56,7 +56,7 @@ def compute_response(fiber, probe, state=None, *, xp=None):
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)
     for element in fiber.elements:
-        parameters.extend((element.r_left, element.t_left_to_right, element.t_right_to_left))
+        parameters.extend(element._parameters())
     for name in FIELD_NAMES:
         state_field = getattr(state, name)
         for term in state_field.terms:

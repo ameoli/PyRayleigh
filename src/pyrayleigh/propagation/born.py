@@ -1,27 +1,42 @@
-"""Direct returns from stored Rayleigh disorder and point reflectors."""
+"""Direct returns from stored Rayleigh disorder and localized elements."""
 
 from ..backends import complex_arrays, real_arrays
+from ..scattering import WeakFBG
 from .phase import optical_path
 
 
 def point_response(fiber, frequency, state=None, *, xp=None):
-    """Complex reflection at the left port from the discrete point elements.
+    """Complex reflection at the left port from localized elements.
 
-    Each r_left is weighted by distributed round-trip propagation and by
-    t_left_to_right*t_right_to_left of every preceding element. Geometry
-    is fixed; evaluation uses the supplied coefficients without mutation.
+    Each local reflection is weighted by distributed round-trip propagation and by
+    t_left_to_right*t_right_to_left of every preceding element. WeakFBG
+    resonances use local total strain and temperature with the section's
+    phase sensitivities; their reference bandwidth stays fixed. Geometry
+    and stored parameters are evaluated without mutation.
     """
     path = optical_path(fiber, state)
     parameters = path.loss._parameters()
     for element in fiber.elements:
-        parameters.extend((element.r_left, element.t_left_to_right, element.t_right_to_left))
+        parameters.extend(element._parameters())
     xp, _ = complex_arrays(*path._parameters(frequency, extra=parameters), xp=xp)
     _, (frequency,) = real_arrays(frequency, xp=xp)
     response = xp.zeros_like(frequency, dtype=xp.complex128)
     through = xp.asarray(1., dtype=xp.complex128)
     for element in fiber.elements:
-        _, (reflection, forward, reverse) = complex_arrays(
-            element.r_left, element.t_left_to_right, element.t_right_to_left, xp=xp)
+        if isinstance(element, WeakFBG):
+            optics = fiber.sections[-1].optics
+            for section in fiber.sections:
+                if element.position < section.end:
+                    optics = section.optics
+                    break
+            strain = path.state.axial_strain.value(element.position, xp=xp)
+            temperature = path.state.temperature_change.value(element.position, xp=xp)
+            shift = optics.relative_phase_change(strain, temperature, xp=xp)
+            reflection = element.reflection(frequency, optics.effective_index, shift, xp=xp)
+            forward = reverse = xp.asarray(1., dtype=xp.complex128)
+        else:
+            _, (reflection, forward, reverse) = complex_arrays(
+                element.r_left, element.t_left_to_right, element.t_right_to_left, xp=xp)
         propagation = path.round_trip(0., element.position, frequency, xp=xp)
         response = response + reflection*through*propagation
         through = through*forward*reverse

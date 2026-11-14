@@ -38,6 +38,9 @@ class PointReflector:
             self.r_left, self.r_right, self.t_left_to_right, self.t_right_to_left, xp=xp)
         return xp.stack((xp.stack((r_left, t_reverse)), xp.stack((t_forward, r_right))))
 
+    def _parameters(self):
+        return self.r_left, self.t_left_to_right, self.t_right_to_left
+
 
 def lossless_reflector(position, reflectance, phase=0., *, xp=None):
     """Reciprocal lossless point with power reflectance R and phase [rad].
