@@ -137,3 +137,130 @@ def test_jax_loss_data_copies_keep_jit_gradients_and_hessians(jax_numpy):
     np.testing.assert_allclose(gradient, -expected*weights, rtol=1e-13, atol=0.)
     np.testing.assert_allclose(hessian, expected*np.outer(weights, weights),
                                rtol=1e-13, atol=0.)
+
+
+def test_log_interpolation_in_curvature_and_frequency(xp):
+    table = BendLossTable([10., 20., 30.], [REFERENCE - 10e9, REFERENCE + 10e9],
+                          xp.asarray([[1., 4.], [9., 36.], [81., 324.]]))
+    curvature = xp.asarray([10., 15., 20., 25., 30.])
+    frequency = xp.asarray([REFERENCE - 10e9, REFERENCE, REFERENCE + 10e9])
+    expected = np.array([1., 3., 9., 27., 81.])[:, None]*np.array([1., 2., 4.])
+    actual = table.value(curvature, frequency)
+    assert actual.dtype == xp.float64
+    assert type(actual) is type(curvature)
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-14, atol=0.)
+    np.testing.assert_allclose(np.asarray(table.by_frequency(curvature)), expected[:, [0, 2]],
+                               rtol=1e-14, atol=0.)
+
+
+def test_curvature_magnitude_lower_cutoff_and_unsupported_values(xp):
+    table = BendLossTable([10., 20.], [REFERENCE], xp.asarray([[1.], [9.]]))
+    curvature = xp.asarray([0., 9., 10., -15., 20., 21., -21., float("inf"), float("nan")])
+    expected = np.array([0., 0., 1., 3., 9., np.nan, np.nan, np.nan, np.nan])
+    np.testing.assert_allclose(np.asarray(table.value(curvature, REFERENCE)), expected,
+                               rtol=1e-14, atol=0., equal_nan=True)
+
+
+def test_interpolation_uses_each_nonuniform_grid_interval(xp):
+    table = BendLossTable([10., 20., 40.], [REFERENCE - 10e9, REFERENCE, REFERENCE + 30e9],
+                          xp.asarray([[1., 4., 16.], [9., 36., 144.], [36., 144., 576.]]))
+    curvature = xp.asarray([15., 30.])
+    frequency = xp.asarray([REFERENCE - 5e9, REFERENCE + 15e9])
+    np.testing.assert_allclose(np.asarray(table.value(curvature, frequency)),
+                               [[6., 24.], [36., 144.]], rtol=1e-14, atol=0.)
+
+
+def test_frequency_queries_clamp_to_the_sampled_band(xp):
+    table = BendLossTable([10., 20.], [REFERENCE - 10e9, REFERENCE + 10e9],
+                          xp.asarray([[1., 4.], [9., 36.]]))
+    frequency = xp.asarray([REFERENCE - 20e9, REFERENCE + 20e9, float("nan")])
+    np.testing.assert_allclose(np.asarray(table.value(15., frequency)), [3., 12., np.nan],
+                               rtol=1e-14, atol=0., equal_nan=True)
+
+
+def test_zero_corners_use_linear_interpolation(xp):
+    constant = BendLossTable([10., 20.], [REFERENCE], xp.asarray([[0.], [.1]]))
+    curvature = xp.asarray([10., 15., 20.])
+    frequency = xp.asarray([REFERENCE - 1e12, REFERENCE, REFERENCE + 1e12])
+    expected = np.array([0., .05, .1])[:, None]*np.ones((1, 3))
+    np.testing.assert_allclose(np.asarray(constant.value(curvature, frequency)), expected,
+                               rtol=1e-14, atol=0.)
+    spectral = BendLossTable([10., 20.], [REFERENCE - 10e9, REFERENCE + 10e9],
+                             xp.asarray([[0., 4.], [0., 36.]]))
+    np.testing.assert_allclose(np.asarray(spectral.value(15., REFERENCE)), 6.,
+                               rtol=1e-14, atol=0.)
+
+
+@pytest.mark.parametrize("curvature_shape", [(), (2, 3), (0,)])
+@pytest.mark.parametrize("frequency_shape", [(), (2, 1), (0,)])
+def test_query_shapes_form_an_outer_grid(xp, curvature_shape, frequency_shape):
+    table = BendLossTable([10., 20.], [REFERENCE - 10e9, REFERENCE + 10e9],
+                          xp.asarray([[1., 4.], [9., 36.]]))
+    curvature = xp.full(curvature_shape, 15., dtype=xp.float64)
+    frequency = xp.full(frequency_shape, REFERENCE, dtype=xp.float64)
+    result = table.value(curvature, frequency)
+    assert result.shape == curvature_shape + frequency_shape
+    assert table.by_frequency(curvature).shape == curvature_shape + (2,)
+    np.testing.assert_allclose(np.asarray(result), np.full(result.shape, 6.),
+                               rtol=1e-14, atol=0.)
+
+
+@pytest.mark.parametrize("curvature,frequency", [
+    (15j, REFERENCE), (15., REFERENCE + 1j), (True, REFERENCE), (15., True),
+])
+def test_queries_are_real_even_for_a_constant_frequency_table(curvature, frequency):
+    table = BendLossTable([10., 20.], [REFERENCE], [[0.], [.1]])
+    with pytest.raises(TypeError):
+        table.value(curvature, frequency)
+
+
+def test_numpy_table_and_jax_queries_need_explicit_selection(jax_numpy):
+    table = BendLossTable([10., 20.], [REFERENCE - 10e9, REFERENCE + 10e9],
+                          [[1., 4.], [9., 36.]])
+    curvature = jax_numpy.asarray(15.)
+    frequency = jax_numpy.asarray(REFERENCE)
+    with pytest.raises(TypeError):
+        table.by_frequency(curvature)
+    with pytest.raises(TypeError):
+        table.value(15., frequency)
+    result = table.value(curvature, frequency, xp=jax_numpy)
+    assert type(result) is type(curvature)
+    np.testing.assert_allclose(np.asarray(result), 6., rtol=1e-14, atol=0.)
+
+
+def test_jax_log_surface_derivatives_in_data_and_both_queries(jax_numpy):
+    import jax
+    def rate(parameters):
+        x, y, u, v = parameters
+        row1 = jax_numpy.stack((x, x + y))
+        row2 = jax_numpy.stack((2.*x, 2.*x + y))
+        attenuation = jax_numpy.exp(jax_numpy.stack((row1, row2)))
+        table = BendLossTable([10., 20.], [REFERENCE - 10e9, REFERENCE + 10e9], attenuation)
+        return table.value(10. + 10.*u, REFERENCE - 10e9 + 20e9*v)
+    parameters = jax_numpy.asarray([np.log(3.), np.log(4.), .3, .4], dtype=jax_numpy.float64)
+    value = jax.jit(rate)(parameters)
+    gradient = jax.jit(jax.grad(rate))(parameters)
+    hessian = jax.jit(jax.hessian(rate))(parameters)
+    x, y, u, v = np.asarray(parameters)
+    expected = np.exp(x*(1. + u) + y*v)
+    derivative = np.array([1. + u, v, x, y])
+    second = np.array([[0., 0., 1., 0.], [0., 0., 0., 1.],
+                        [1., 0., 0., 0.], [0., 1., 0., 0.]])
+    np.testing.assert_allclose(value, expected, rtol=1e-13, atol=0.)
+    np.testing.assert_allclose(gradient, expected*derivative, rtol=1e-12, atol=0.)
+    np.testing.assert_allclose(hessian, expected*(np.outer(derivative, derivative) + second),
+                               rtol=1e-11, atol=1e-13)
+
+
+def test_jax_linear_branch_next_to_zero_has_finite_derivatives(jax_numpy):
+    import jax
+    def rate(parameters):
+        right, fraction = parameters
+        attenuation = jax_numpy.reshape(jax_numpy.stack((jax_numpy.asarray(0.), right)), (2, 1))
+        table = BendLossTable([10., 20.], [REFERENCE], attenuation)
+        return table.value(10. + 10.*fraction, REFERENCE)
+    parameters = jax_numpy.asarray([.2, .4], dtype=jax_numpy.float64)
+    np.testing.assert_allclose(jax.jit(rate)(parameters), .08, rtol=1e-14, atol=0.)
+    np.testing.assert_allclose(jax.jit(jax.grad(rate))(parameters), [.4, .2], rtol=1e-13, atol=0.)
+    np.testing.assert_allclose(jax.jit(jax.hessian(rate))(parameters), [[0., 1.], [1., 0.]],
+                               rtol=1e-13, atol=1e-14)
