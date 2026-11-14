@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pyrayleigh import (Fiber, GuideOptics, PointReflector, Probe, RayleighRealization,
-                        Section, compute_response,
+                        Section, compute_response, index_segments_profile,
                         ornstein_uhlenbeck_index_from_normals as index_from_normals,
                         ornstein_uhlenbeck_index_profile as index_profile)
 from pyrayleigh.constants import SPEED_OF_LIGHT
@@ -171,3 +171,117 @@ def test_jax_response_keeps_sigma_correlation_and_normal_derivatives(jax_numpy):
     np.testing.assert_allclose(value, expected, rtol=1e-12, atol=1e-15)
     np.testing.assert_allclose(gradient, first_factor*derivative, rtol=1e-10, atol=1e-14)
     np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-10, atol=1e-14)
+
+
+def test_index_segments_add_overlaps_and_exclude_the_right_end(xp):
+    segments = [(np.float64(1.), np.float64(2.), xp.asarray(-2e-6)),
+                (0., 1., xp.asarray(1e-6)), (.5, 1.5, xp.asarray(3e-6)),
+                (1., 1.5, xp.asarray(.5e-6))]
+    profile = index_segments_profile(segments)
+    assert profile.values.dtype == xp.float64
+    assert type(profile.values) is type(segments[0][2])
+    np.testing.assert_array_equal(profile.positions, np.repeat([0., .5, 1., 1.5, 2.], 2))
+    positions = xp.asarray([-1., 0., .25, .5, .75, 1., 1.25, 1.5, 1.75, 2., 3.])
+    expected = np.array([0., 1., 1., 4., 4., 1.5, 1.5, -2., -2., 0., 0.])*1e-6
+    integrals = np.array([0., 0., .25, .5, 1.5, 2.5, 2.875, 3.25, 2.75, 2.25, 2.25])*1e-6
+    np.testing.assert_allclose(np.asarray(profile.value(positions)), expected,
+                               rtol=1e-14, atol=1e-21)
+    np.testing.assert_allclose(np.asarray(profile.integral(positions)), integrals,
+                               rtol=1e-14, atol=1e-21)
+
+
+def test_zero_segments_and_cancelling_overlaps_keep_their_edges(xp):
+    profile = index_segments_profile([(2., 3., xp.asarray(2e-6)),
+                                      (0., 1., xp.asarray(1e-6)),
+                                      (0., 1., xp.asarray(-1e-6)),
+                                      (1., 2., xp.asarray(0.))])
+    np.testing.assert_array_equal(profile.positions, np.repeat([0., 1., 2., 3.], 2))
+    positions = xp.asarray([-1., 0., 1., 2., 3.])
+    np.testing.assert_array_equal(np.asarray(profile.value(positions)), [0., 0., 0., 2e-6, 0.])
+    np.testing.assert_allclose(np.asarray(profile.integral(3.)), 2e-6, rtol=1e-14, atol=0.)
+
+
+def test_empty_index_segments_give_a_native_zero_profile(xp):
+    profile = index_segments_profile([], xp=xp)
+    assert profile.values.dtype == xp.float64
+    assert type(profile.values) is type(xp.asarray(0.))
+    np.testing.assert_array_equal(profile.positions, [0., 0.])
+    positions = xp.asarray([[-1., 0.], [1., 2.]])
+    for method in (profile.value, profile.integral):
+        np.testing.assert_array_equal(np.asarray(method(positions)), np.zeros((2, 2)))
+
+
+@pytest.mark.parametrize("start,end,error", [
+    (-1., 1., ValueError), (1., 1., ValueError), (1., 0., ValueError),
+    (0., float("nan"), ValueError), (0., float("inf"), ValueError),
+    (True, 1., TypeError), (np.array(0.), 1., TypeError),
+])
+def test_segment_endpoints_are_fixed_finite_and_ordered(start, end, error):
+    with pytest.raises(error):
+        index_segments_profile([(start, end, 1e-6)])
+
+
+@pytest.mark.parametrize("value,error", [
+    ([1e-6], ValueError), (np.ones((1, 1)), ValueError),
+    (1j, TypeError), (True, TypeError),
+])
+def test_segment_index_changes_are_real_scalars(value, error):
+    with pytest.raises(error):
+        index_segments_profile([(0., 1., value)])
+
+
+def test_jax_segment_geometry_is_rejected_without_detaching_it(jax_numpy):
+    with pytest.raises(TypeError, match="fixed real"):
+        index_segments_profile([(jax_numpy.asarray(0.), 1., 1e-6)])
+
+
+def test_mixed_segment_namespaces_require_explicit_selection(jax_numpy):
+    segments = [(0., 1., np.array(1e-6)), (1., 2., jax_numpy.asarray(2e-6))]
+    with pytest.raises(TypeError):
+        index_segments_profile(segments)
+    profile = index_segments_profile(segments, xp=jax_numpy)
+    assert type(profile.values) is type(segments[1][2])
+    np.testing.assert_array_equal(np.asarray(profile.value(jax_numpy.asarray([.5, 1.5]))),
+                                  [1e-6, 2e-6])
+
+
+def test_empty_segments_still_require_jax_x64():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", False)
+    try:
+        with pytest.raises(RuntimeError, match="jax_enable_x64"):
+            index_segments_profile([], xp=jnp)
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_jax_response_keeps_derivatives_of_zero_and_overlapping_segments(jax_numpy):
+    import jax
+    reference = SPEED_OF_LIGHT/1550e-9
+    guide = GuideOptics(reference, 1.4682, 1.4682)
+    length = SPEED_OF_LIGHT/(4.*guide.effective_index*reference)
+    def objective(parameters):
+        profile = index_segments_profile([(0., .75*length, parameters[0]*.01),
+                                          (.25*length, length, parameters[1]*.01)])
+        sample = RayleighRealization(jax_numpy.asarray([.1]), [0.], [0., length])
+        fiber = Fiber("short", length, 293.15, reference - 50e9, reference + 50e9,
+                      [Section(0., length, guide, 0., 1e-8)],
+                      [PointReflector(length, .2, 0., .8, .7)], sample,
+                      index_perturbation=profile)
+        response = compute_response(fiber, Probe(jax_numpy.asarray(reference)))
+        return (jax_numpy.abs(response.reflection)**2
+                + .1*jax_numpy.real(response.transmission))
+    parameters = jax_numpy.asarray([0., 2.], dtype=jax_numpy.float64)
+    value = jax.jit(objective)(parameters)
+    gradient = jax.jit(jax.grad(objective))(parameters)
+    hessian = jax.jit(jax.hessian(objective))(parameters)
+    scale = .0075*np.pi/guide.effective_index
+    phase = 2.*scale
+    expected = .05 - .04*np.cos(phase) - .08*np.sin(phase/2.)
+    derivative = (.04*np.sin(phase) - .04*np.cos(phase/2.))*scale
+    second = (.04*np.cos(phase) + .02*np.sin(phase/2.))*scale**2
+    np.testing.assert_allclose(value, expected, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(gradient, np.full(2, derivative), rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(hessian, np.full((2, 2), second), rtol=1e-10, atol=1e-14)

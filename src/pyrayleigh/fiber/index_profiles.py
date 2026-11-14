@@ -10,6 +10,44 @@ from ..backends import real_arrays
 from ..state.fields import SpatialProfile
 
 
+def index_segments_profile(segments, *, xp=None):
+    """Sum constant delta n values on fixed half-open intervals [start, end)."""
+    changes, values = {}, []
+    for index, (start, end, delta_index) in enumerate(segments):
+        for position in (start, end):
+            if isinstance(position, bool) or not isinstance(position, Real):
+                raise TypeError("segment positions must be fixed real numbers")
+            if not math.isfinite(position):
+                raise ValueError("segment positions must be finite")
+        start, end = float(start), float(end)
+        if start < 0. or end <= start:
+            raise ValueError("segments require 0 <= start < end")
+        changes.setdefault(start, []).append((index, True))
+        changes.setdefault(end, []).append((index, False))
+        values.append(delta_index)
+    xp, arrays = real_arrays(0., *values, xp=xp)
+    zero, amplitudes = arrays[0], arrays[1:]
+    if any(value.ndim != 0 for value in amplitudes):
+        raise ValueError("segment index changes must be scalars")
+    if not changes:
+        return SpatialProfile([0., 0.], xp.stack((zero, zero)))
+    positions, samples, active = [], [], set()
+    value = zero
+    for position, events in sorted(changes.items()):
+        positions.extend((position, position))
+        samples.append(value)
+        for index, starts in events:
+            if starts:
+                active.add(index)
+            else:
+                active.remove(index)
+        value = zero
+        for index in sorted(active):
+            value = value + amplitudes[index]
+        samples.append(value)
+    return SpatialProfile(positions, xp.stack(samples))
+
+
 def _sample_positions(length, sample_spacing):
     for name, value in (("length", length), ("sample_spacing", sample_spacing)):
         if isinstance(value, bool) or not isinstance(value, Real):
