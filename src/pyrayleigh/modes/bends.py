@@ -196,3 +196,31 @@ def marcuse_bend_loss_db(radius, turns, wavelength, core_radius, core_index, cla
                  + xp.log(safe_radius) + xp.log(safe_turns))
     loss = xp.exp(log_loss)
     return xp.where(valid & xp.isfinite(loss), loss, xp.full_like(loss, float("nan")))
+
+
+def marcuse_bend_loss_table(frequencies, core_radius, core_index, cladding_index,
+                             bend_radii=DEFAULT_TABLE_RADII, radius_factor=1.28, *, xp=None):
+    """Sample Marcuse LP01 power rates into a BendLossTable.
+
+    Frequencies [Hz] are fixed, positive and strictly increasing (at least
+    one). Radii [m] are fixed, positive and distinct, in any order (at least
+    two). Core radius, both indices and radius_factor are native scalars.
+    The returned (curvature, frequency) rates stay native float64, including
+    underflowed zeros and NaN samples outside the model's supported range.
+
+    A single frequency freezes the model there, as at PyOFDR's centre
+    wavelength. Rates are exact at the sampled pairs; interpolation between
+    them follows BendLossTable. They apply over physical bent lengths;
+    arbitrary PyOFDR spans use marcuse_bend_loss_db and attenuation_from_loss_db.
+    """
+    frequencies = _fixed_grid(frequencies, "frequencies", 1)
+    radii, _ = _sorted_radii(bend_radii)
+    radii = radii[::-1]
+    xp, parameters = real_arrays(core_radius, core_index, cladding_index, radius_factor, xp=xp)
+    if any(value.ndim != 0 for value in parameters):
+        raise ValueError("core radius, indices and radius_factor must be scalars")
+    frequency = xp.asarray(frequencies.tolist(), dtype=xp.float64)
+    radius = xp.asarray(radii.tolist(), dtype=xp.float64)
+    a, n1, n2, correction = parameters
+    rates = marcuse_bend_attenuation(frequency[None, :], a, n1, n2, radius[:, None], correction, xp=xp)
+    return BendLossTable(1./radii, frequencies, rates)
