@@ -6,6 +6,7 @@ from .backends import complex_arrays, real_arrays
 from .probe import Probe
 from .propagation import optical_path, point_response, rayleigh_response
 from .state import FiberState
+from .state.state import FIELD_NAMES
 
 
 @dataclass(frozen=True, eq=False)
@@ -56,7 +57,8 @@ def compute_response(fiber, probe, state=None, *, xp=None):
         parameters.append(fiber.rayleigh.coefficients)
     for element in fiber.elements:
         parameters.extend((element.r_left, element.t_left_to_right, element.t_right_to_left))
-    for state_field in (state.axial_strain, state.temperature_change):
+    for name in FIELD_NAMES:
+        state_field = getattr(state, name)
         for term in state_field.terms:
             parameters.append(term.profile.values)
             if term.history is not None:

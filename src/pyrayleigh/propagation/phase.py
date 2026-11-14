@@ -32,6 +32,9 @@ class OpticalPath:
             raise TypeError("state must be a FiberState")
         if not self.state.is_static:
             raise NotImplementedError("OpticalPath requires a static FiberState")
+        curved = not self.state.curvature_x.is_zero or not self.state.curvature_y.is_zero
+        if curved and any(section.optics.bend_loss is not None for section in self.fiber.sections):
+            raise NotImplementedError("bend-loss integration of curvature fields is not available yet")
 
     def _parameters(self, frequency, extra=()):
         parameters = [frequency, *extra]

@@ -7,7 +7,7 @@ from pyrayleigh import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
 def test_default_state_is_the_zero_reference_state():
     state = FiberState()
     assert state.is_static
-    for field in (state.axial_strain, state.temperature_change):
+    for field in (state.axial_strain, state.temperature_change, state.curvature_x, state.curvature_y):
         assert field.is_zero
         np.testing.assert_array_equal(field.value([0., 1.]), [0., 0.])
         np.testing.assert_array_equal(field.integral([0., 1.]), [0., 0.])
@@ -25,7 +25,7 @@ def test_state_keeps_supplied_fields_and_their_independent_values():
     np.testing.assert_array_equal(state.temperature_change.integral(1., .5), 1.25)
 
 
-@pytest.mark.parametrize("name", ["axial_strain", "temperature_change"])
+@pytest.mark.parametrize("name", ["axial_strain", "temperature_change", "curvature_x", "curvature_y"])
 def test_state_static_flag_depends_on_history_presence(name):
     dynamic = Field([FieldTerm(SpatialProfile([0., 2.], [0., 0.]),
                                TimeHistory([0.], [0.]))])
@@ -37,6 +37,8 @@ def test_state_static_flag_depends_on_history_presence(name):
     ("axial_strain", None), ("axial_strain", 1e-6),
     ("temperature_change", 293.15),
     ("temperature_change", FieldTerm(SpatialProfile([0., 1.], [1., 1.]))),
+    ("curvature_x", None), ("curvature_y", 1.),
+    ("curvature_x", SpatialProfile([0., 1.], [1., 1.])),
 ])
 def test_state_requires_explicit_fields(name, value):
     with pytest.raises(TypeError, match=name):
