@@ -75,6 +75,10 @@ class Fiber:
             sections[0] = replace(sections[0], start=0.)
         if sections[-1].end != self.length:
             sections[-1] = replace(sections[-1], end=self.length)
+        for section in sections:
+            table = section.optics.bend_loss
+            if table is not None and not table.covers(self.frequency_min, self.frequency_max):
+                raise ValueError("section bend-loss table must cover the declared fiber band")
         object.__setattr__(self, "sections", tuple(sections))
 
     def _check_elements(self):

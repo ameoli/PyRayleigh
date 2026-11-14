@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from pyrayleigh import (Fiber, GuideOptics, RayleighRealization, Section,
+from pyrayleigh import (BendLossTable, Fiber, GuideOptics, RayleighRealization, Section,
                         lossless_reflector, rayleigh_from_normals, units)
 
 OPTICS = GuideOptics(193414489032258.06, 1.4682, 1.4682)
@@ -31,6 +31,40 @@ def test_single_section_fiber():
     assert fiber.frequency_min == 1.9e14
     assert fiber.elements == ()
     assert fiber.rayleigh is None
+
+
+@pytest.mark.parametrize("frequencies", [[1.95e14], [1.9e14, 2e14], [1.8e14, 2.1e14]])
+def test_section_bend_table_covers_the_declared_band(frequencies):
+    table = BendLossTable([10., 20.], frequencies, np.ones((2, len(frequencies)))*.01)
+    guide = replace(OPTICS, bend_loss=table)
+    fiber = make_fiber([Section(0., 2., guide, 0., 1e-8)])
+    assert fiber.sections[0].optics.bend_loss is table
+
+
+@pytest.mark.parametrize("frequencies", [[1.91e14, 2e14], [1.9e14, 1.99e14]])
+@pytest.mark.parametrize("table_in_first_section", [True, False])
+def test_each_section_bend_table_must_cover_the_whole_fiber_band(
+        frequencies, table_in_first_section):
+    table = BendLossTable([10., 20.], frequencies, np.ones((2, 2))*.01)
+    guide = replace(OPTICS, bend_loss=table)
+    guides = [guide, OPTICS] if table_in_first_section else [OPTICS, guide]
+    parts = [Section(0., 1., guides[0], 0., 1e-8), Section(1., 2., guides[1], 0., 1e-8)]
+    with pytest.raises(ValueError, match="bend-loss table.*fiber band"):
+        make_fiber(parts)
+
+
+def test_snapping_and_rayleigh_generation_retain_the_same_bend_table():
+    table = BendLossTable([10., 20.], [1.95e14], [[.01], [.1]])
+    guide = replace(OPTICS, bend_loss=table)
+    part = Section(5e-13, 2. - 5e-13, guide, 0., 1e-8)
+    fiber = make_fiber([part])
+    assert fiber.sections[0].start == 0.
+    assert fiber.sections[0].end == 2.
+    generated = fiber.with_rayleigh(27, cell_length=.5)
+    assert generated.sections[0].optics.bend_loss is table
+    assert part.start == 5e-13
+    plain = make_fiber([section(0., 2.)]).with_rayleigh(27, cell_length=.5)
+    np.testing.assert_array_equal(generated.rayleigh.coefficients, plain.rayleigh.coefficients)
 
 
 def test_input_section_list_is_not_retained():

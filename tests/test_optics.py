@@ -3,7 +3,7 @@ import array_api_strict as strict
 import numpy as np
 import pytest
 
-from pyrayleigh import GuideOptics, units
+from pyrayleigh import BendLossTable, Fiber, GuideOptics, Section, units
 from pyrayleigh.constants import SPEED_OF_LIGHT
 
 REFERENCE = 193414489032258.06
@@ -218,3 +218,49 @@ def test_jax_sensitivity_derivatives_in_physical_coefficients(jax_numpy, method_
     np.testing.assert_allclose(gradient, -np.sin(phase)*phase_gradient, rtol=1e-13, atol=0.)
     np.testing.assert_allclose(hessian, -np.cos(phase)*np.outer(phase_gradient, phase_gradient),
                                rtol=1e-12, atol=1e-15)
+
+
+def test_bend_table_is_retained_without_changing_the_reference_guide(xp):
+    table = BendLossTable([10., 20.], [REFERENCE], xp.asarray([[.01], [.1]]))
+    guide = GuideOptics(REFERENCE, 1.45, 1.47, GVD, bend_loss=table)
+    plain = GuideOptics(REFERENCE, 1.45, 1.47, GVD)
+    assert guide.bend_loss is table
+    assert plain.bend_loss is None
+    frequency = xp.asarray([REFERENCE - 1e9, REFERENCE, REFERENCE + 1e9])
+    for name in ("propagation_constant", "propagation_constant_offset", "group_delay_per_length"):
+        np.testing.assert_array_equal(np.asarray(getattr(guide, name)(frequency)),
+                                      np.asarray(getattr(plain, name)(frequency)))
+
+
+@pytest.mark.parametrize("table", [0., {}, np.array([[.01], [.1]])])
+def test_bend_loss_requires_a_table_or_none(table):
+    with pytest.raises(TypeError, match="BendLossTable"):
+        GuideOptics(REFERENCE, 1.45, 1.47, bend_loss=table)
+
+
+def test_jax_table_parameters_keep_derivatives_through_guide_and_fiber(jax_numpy):
+    import jax
+    def power(parameters):
+        left, right, fraction = parameters
+        values = jax_numpy.reshape(jax_numpy.exp(jax_numpy.stack((left, right))), (2, 1))
+        table = BendLossTable([10., 20.], [REFERENCE], values)
+        guide = GuideOptics(REFERENCE, 1.45, 1.47, bend_loss=table)
+        part = Section(5e-13, 2. - 5e-13, guide, 0., 1e-8)
+        fiber = Fiber("test", 2., 293.15, REFERENCE - 1e9, REFERENCE + 1e9, [part])
+        stored = fiber.sections[0].optics.bend_loss
+        rate = stored.value(10. + 10.*fraction, REFERENCE)
+        return jax_numpy.exp(-fiber.length*rate)
+    parameters = jax_numpy.asarray([np.log(.01), np.log(.04), .5], dtype=jax_numpy.float64)
+    value = jax.jit(power)(parameters)
+    gradient = jax.jit(jax.grad(power))(parameters)
+    hessian = jax.jit(jax.hessian(power))(parameters)
+    left, right, fraction = np.asarray(parameters)
+    depth = 2.*np.exp((1. - fraction)*left + fraction*right)
+    expected = np.exp(-depth)
+    derivative = np.array([1. - fraction, fraction, right - left])
+    second = np.array([[0., 0., -1.], [0., 0., 1.], [-1., 1., 0.]])
+    expected_hessian = expected*((depth**2 - depth)*np.outer(derivative, derivative)
+                                 - depth*second)
+    np.testing.assert_allclose(value, expected, rtol=1e-13, atol=0.)
+    np.testing.assert_allclose(gradient, -depth*expected*derivative, rtol=1e-12, atol=0.)
+    np.testing.assert_allclose(hessian, expected_hessian, rtol=1e-11, atol=1e-14)

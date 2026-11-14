@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from ..backends import real_arrays
 from ..constants import SPEED_OF_LIGHT
+from .loss import BendLossTable
 
 PHOTOELASTIC_COEFFICIENT = .22
 THERMO_OPTIC_COEFFICIENT = 6.5e-6
@@ -26,6 +27,8 @@ class GuideOptics:
     expansion are in 1/K. Sensitivities use total axial strain, with the
     temperature factors defined at fixed total strain.
     Parameters are stored as supplied, including native JAX values.
+    bend_loss optionally stores a BendLossTable for this mode; it does
+    not change the reference phase or dispersion.
     """
 
     frequency_ref: float
@@ -39,6 +42,7 @@ class GuideOptics:
     temperature_group_factor: float = (THERMO_OPTIC_COEFFICIENT
                                        + PHOTOELASTIC_COEFFICIENT*THERMAL_EXPANSION)
     thermal_expansion: float = THERMAL_EXPANSION
+    bend_loss: BendLossTable | None = None
 
     def __post_init__(self):
         for name in ("frequency_ref", "effective_index", "group_index", "gvd",
@@ -47,6 +51,8 @@ class GuideOptics:
             _, (value,) = real_arrays(getattr(self, name))
             if value.ndim != 0:
                 raise ValueError("guide parameters must be scalars")
+        if self.bend_loss is not None and not isinstance(self.bend_loss, BendLossTable):
+            raise TypeError("bend_loss must be a BendLossTable or None")
 
     def _parameters(self, frequency, xp):
         xp, values = real_arrays(frequency, self.frequency_ref, self.effective_index,
