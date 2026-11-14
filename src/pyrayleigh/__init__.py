@@ -8,5 +8,5 @@ from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
 from .propagation import OpticalPath, optical_path, point_response, rayleigh_response
 from .scattering import (PointReflector, RayleighRealization, generate_rayleigh,
-                         lossless_reflector, rayleigh_from_normals)
+                         lossless_reflector, rayleigh_from_normals, weak_fbg_reflection)
 from .response import Response, compute_response
