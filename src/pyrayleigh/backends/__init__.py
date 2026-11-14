@@ -16,6 +16,16 @@ def array_namespace(*arrays):
     return xp
 
 
+def fixed_loop(count, body, state, *, xp):
+    """Fixed iteration count, kept as a native loop when JAX is selected."""
+    if apc.is_jax_namespace(xp):
+        from jax import lax
+        return lax.fori_loop(0, count, body, state)
+    for index in range(count):
+        state = body(index, state)
+    return state
+
+
 def asarray(values, *, xp):
     """Physical numerical data as float64 or complex128 in the given namespace."""
     _require_x64(xp)
