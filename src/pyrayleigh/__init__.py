@@ -8,7 +8,7 @@ from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
 from .propagation import (OpticalPath, multiple_point_response, optical_path, point_reflection_paths,
                            point_response, rayleigh_response)
-from .scattering import (PointReflector, RayleighRealization, WeakFBG, generate_rayleigh,
-                         crosstalk_from_phases, crosstalk_pairs, lossless_reflector,
-                         rayleigh_from_normals, weak_fbg_reflection)
+from .scattering import (CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
+                         crosstalk_from_phases, crosstalk_pairs, generate_crosstalk, generate_rayleigh,
+                         lossless_reflector, rayleigh_from_normals, weak_fbg_reflection)
 from .response import Response, compute_response
