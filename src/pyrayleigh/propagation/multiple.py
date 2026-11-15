@@ -1,6 +1,7 @@
 """Additional returns from repeated reflections between point elements."""
 
 from itertools import combinations
+import math
 
 from ..backends import complex_arrays, real_arrays
 from ..scattering import PointReflector
@@ -19,6 +20,19 @@ def multiple_point_response(fiber, frequency, state=None, *, max_order=2, xp=Non
     Only PointReflector objects bounce here. Acquisition range is left to
     the caller; the result has frequency.shape and dtype complex128.
     """
+    xp, frequency, returns = _multiple_point_returns(fiber, frequency, state, max_order=max_order, xp=xp)
+    response = xp.zeros_like(frequency, dtype=xp.complex128)
+    for _, amplitude in returns:
+        response = response + amplitude
+    return response
+
+
+def _multiple_point_returns(fiber, frequency, state=None, *, max_order=2, xp=None):
+    """Return the namespace, native frequencies and an iterator of (position, field).
+
+    Position is half the geometric path length, without binning or clipping.
+    Fields include all actual propagation legs and original point coefficients.
+    """
     routes = tuple(route for route in point_reflection_paths(fiber, max_order=max_order)
                     if len(route) > 1)
     path = optical_path(fiber, state)
@@ -29,9 +43,8 @@ def multiple_point_response(fiber, frequency, state=None, *, max_order=2, xp=Non
             parameters.extend((element.r_left, element.r_right))
     xp, _ = complex_arrays(*path._parameters(frequency, extra=parameters), xp=xp)
     _, (frequency,) = real_arrays(frequency, xp=xp)
-    response = xp.zeros_like(frequency, dtype=xp.complex128)
     if not routes:
-        return response
+        return xp, frequency, iter(())
 
     indices = (-1, *(index for index, element in enumerate(fiber.elements)
                       if isinstance(element, PointReflector)))
@@ -49,14 +62,18 @@ def multiple_point_response(fiber, frequency, state=None, *, max_order=2, xp=Non
         travel[left, right] = forward
         travel[right, left] = reverse
 
-    for route in routes:
-        amplitude = xp.ones_like(frequency, dtype=xp.complex128)
-        previous = -1
-        for event, current in enumerate(route):
-            element = fiber.elements[current]
-            reflection = element.r_left if event % 2 == 0 else element.r_right
-            _, (reflection,) = complex_arrays(reflection, xp=xp)
-            amplitude = amplitude*travel[previous, current]*reflection
-            previous = current
-        response = response + amplitude*travel[previous, -1]
-    return response
+    def returns():
+        for route in routes:
+            amplitude = xp.ones_like(frequency, dtype=xp.complex128)
+            previous = -1
+            for event, current in enumerate(route):
+                element = fiber.elements[current]
+                reflection = element.r_left if event % 2 == 0 else element.r_right
+                _, (reflection,) = complex_arrays(reflection, xp=xp)
+                amplitude = amplitude*travel[previous, current]*reflection
+                previous = current
+            position = math.fsum(fiber.elements[current].position if event % 2 == 0
+                                  else -fiber.elements[current].position
+                                  for event, current in enumerate(route))
+            yield position, amplitude*travel[previous, -1]
+    return xp, frequency, returns()
