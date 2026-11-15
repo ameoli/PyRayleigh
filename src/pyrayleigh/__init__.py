@@ -2,8 +2,9 @@
 
 __version__ = "0.1.0.dev0"
 
-from .fiber import (BendLossTable, Fiber, GuideOptics, Section, add_profiles, index_segments_profile,
-                    ornstein_uhlenbeck_index_from_normals, ornstein_uhlenbeck_index_profile)
+from .fiber import (BendLossTable, Fiber, GuideOptics, MultiCoreFiber, Section, add_profiles,
+                    index_segments_profile, ornstein_uhlenbeck_index_from_normals,
+                    ornstein_uhlenbeck_index_profile)
 from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
 from .propagation import (OpticalPath, multiple_point_response, optical_path, point_reflection_paths,
