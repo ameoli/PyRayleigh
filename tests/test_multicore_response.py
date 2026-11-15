@@ -142,10 +142,10 @@ def test_manual_multicore_response_requires_a_probe():
 
 
 @pytest.mark.parametrize("empty", [False, True])
-def test_crosstalk_with_discrete_elements_is_rejected_even_for_empty_probes(empty):
+def test_off_grid_points_are_rejected_even_with_fbg_and_empty_probes(empty):
     model = make_model().with_crosstalk(42, -30.)
     probe = Probe([]) if empty else Probe(REFERENCE)
-    with pytest.raises(NotImplementedError, match="active crosstalk"):
+    with pytest.raises(NotImplementedError, match="unique crosstalk grid positions"):
         compute_response(model, probe)
 
 

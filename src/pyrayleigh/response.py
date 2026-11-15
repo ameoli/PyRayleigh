@@ -92,8 +92,9 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
     supports Rayleigh and direct point returns with a shared state and common
     propagation. Points must share positions and match unique crosstalk grid
     entries; their transmission coefficients must agree between cores.
-    FBGs and multiple point reflections with crosstalk remain unsupported.
-    Local coefficients are mixed before propagation. Different fixed path
+    Weak FBG returns stay per core, outside crosstalk, as in PyOFDR.
+    Multiple point reflections with crosstalk remain unsupported.
+    Rayleigh and point coefficients are mixed before propagation. Different fixed path
     layouts raise NotImplementedError; unequal native path parameters give
     NaN fields, keeping the comparison traceable with JAX.
     """
@@ -158,9 +159,8 @@ def _multicore_response(fiber, probe, state, max_order, xp):
             raise TypeError("per-core states must be FiberState objects or None")
     cores = fiber.cores
     if fiber.crosstalk is not None:
-        if any(not isinstance(element, PointReflector) for core in cores for element in core.elements):
-            raise NotImplementedError("active crosstalk does not support FBG elements yet")
-        if max_order > 1 and any(core.elements for core in cores):
+        if max_order > 1 and any(isinstance(element, PointReflector)
+                                 for core in cores for element in core.elements):
             raise NotImplementedError("coupled point returns currently require max_order=1")
         if any(item is not states[0] for item in states[1:]):
             raise NotImplementedError("coupled response requires one shared FiberState")
@@ -182,10 +182,12 @@ def _multicore_response(fiber, probe, state, max_order, xp):
 
 
 def _coupled_point_cores(fiber, cores, xp):
-    """Mix effective left returns on internal copies, keeping the original transmissions."""
-    reference = cores[0].elements
+    """Mix point left returns on copies, keeping FBGs and transmissions."""
+    points = tuple(tuple(element for element in core.elements if isinstance(element, PointReflector))
+                   for core in cores)
+    reference = points[0]
     positions = tuple(element.position for element in reference)
-    if any(tuple(element.position for element in core.elements) != positions for core in cores[1:]):
+    if any(tuple(element.position for element in core_points) != positions for core_points in points[1:]):
         raise NotImplementedError("coupled point cores require common reflector positions")
     if not reference:
         return cores
@@ -196,7 +198,7 @@ def _coupled_point_cores(fiber, cores, xp):
             raise NotImplementedError("coupled reflectors must match unique crosstalk grid positions")
         columns.append(int(matches[0]))
     count = fiber.n_cores*len(reference)
-    xp, arrays = complex_arrays(*(element.r_left for core in cores for element in core.elements),
+    xp, arrays = complex_arrays(*(element.r_left for core_points in points for element in core_points),
                                 fiber.crosstalk.phases, fiber.xt_db_per_km, xp=xp)
     profile = xp.reshape(xp.stack(arrays[:count]), (fiber.n_cores, len(reference)))
     _, (phases,) = real_arrays(fiber.crosstalk.phases, xp=xp)
@@ -204,8 +206,9 @@ def _coupled_point_cores(fiber, cores, xp):
     mixed = crosstalk_from_phases(profile, xp.asarray(positions, dtype=xp.float64),
                                   fiber.xt_db_per_km, selected,
                                   topology=fiber.crosstalk.topology, xp=xp)
-    return tuple(replace(core, elements=tuple(replace(element, r_left=mixed[index, point])
-                                              for point, element in enumerate(core.elements)))
+    return tuple(replace(core, elements=tuple(
+        replace(element, r_left=mixed[index, positions.index(element.position)])
+        if isinstance(element, PointReflector) else element for element in core.elements))
                  for index, core in enumerate(cores))
 
 
@@ -240,7 +243,9 @@ def _common_coupled_path(cores, xp):
                 raise NotImplementedError("coupled cores require a common index-profile layout")
             _, (a, b) = real_arrays(first.values, second.values, xp=xp)
             valid = valid & xp.all(a == b)
-        for first, second in zip(reference.elements, core.elements):
+        left_points = (element for element in reference.elements if isinstance(element, PointReflector))
+        right_points = (element for element in core.elements if isinstance(element, PointReflector))
+        for first, second in zip(left_points, right_points):
             _, (a, b, c, d) = complex_arrays(first.t_left_to_right, second.t_left_to_right,
                                              first.t_right_to_left, second.t_right_to_left, xp=xp)
             valid = valid & xp.all(a == b) & xp.all(c == d)
