@@ -154,11 +154,13 @@ class CrosstalkRealization:
 def generate_crosstalk(n_cores, positions, seed, *, topology="linear", extra_positions=(), xp=None):
     """Draw U(0, 2*pi) phases once using a private NumPy PCG64 stream.
 
-    Draws follow PyOFDR's directed-pair order and are identical in every
+    Base draws follow PyOFDR's directed-pair order and are identical in every
     backend. seed is the stream seed; PyOFDR keeps its component seed
     derivation. The returned sample is independent of the coupling level.
     Extra fixed positions are appended, ignoring repeats and positions already
     in the base grid, allowing round-off. The base columns keep their original seeded phases.
+    Extra draws are grouped by position, keeping earlier columns when more
+    positions are appended with the same seed.
     """
     if isinstance(seed, (bool, np.bool_)):
         raise ValueError("seed must be a nonnegative integer")
@@ -180,7 +182,7 @@ def generate_crosstalk(n_cores, positions, seed, *, topology="linear", extra_pos
             additional.append(position)
     rng = np.random.Generator(np.random.PCG64(seed))
     phases = rng.uniform(0., 2.*np.pi, (len(pairs), len(positions)))
-    extra_phases = rng.uniform(0., 2.*np.pi, (len(pairs), len(additional)))
+    extra_phases = rng.uniform(0., 2.*np.pi, (len(additional), len(pairs))).T
     positions = np.concatenate((positions, additional))
     phases = np.concatenate((phases, extra_phases), axis=1)
     _, (phases,) = real_arrays(phases, xp=xp)
