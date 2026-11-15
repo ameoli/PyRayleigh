@@ -10,7 +10,7 @@ from .probe import Probe
 from .propagation import multiple_point_response, optical_path, point_response, rayleigh_response
 from .propagation.paths import _check_max_order
 from .propagation.phase import _GUIDE_PARAMETERS
-from .scattering import PointReflector
+from .scattering import PointReflector, crosstalk_from_phases
 from .state import FiberState
 from .state.state import FIELD_NAMES
 
@@ -89,10 +89,13 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
-    currently supports Rayleigh-only cores with a shared state and common
-    propagation. Local coefficients are mixed before propagation. Different
-    fixed path layouts raise NotImplementedError; unequal native path
-    parameters give NaN fields, keeping the comparison traceable with JAX.
+    supports Rayleigh and direct point returns with a shared state and common
+    propagation. Points must share positions and match unique crosstalk grid
+    entries; their transmission coefficients must agree between cores.
+    FBGs and multiple point reflections with crosstalk remain unsupported.
+    Local coefficients are mixed before propagation. Different fixed path
+    layouts raise NotImplementedError; unequal native path parameters give
+    NaN fields, keeping the comparison traceable with JAX.
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
@@ -155,13 +158,16 @@ def _multicore_response(fiber, probe, state, max_order, xp):
             raise TypeError("per-core states must be FiberState objects or None")
     cores = fiber.cores
     if fiber.crosstalk is not None:
-        if any(core.elements for core in cores):
-            raise NotImplementedError("active crosstalk currently supports Rayleigh-only cores")
+        if any(not isinstance(element, PointReflector) for core in cores for element in core.elements):
+            raise NotImplementedError("active crosstalk does not support FBG elements yet")
+        if max_order > 1 and any(core.elements for core in cores):
+            raise NotImplementedError("coupled point returns currently require max_order=1")
         if any(item is not states[0] for item in states[1:]):
-            raise NotImplementedError("coupled Rayleigh response requires one shared FiberState")
+            raise NotImplementedError("coupled response requires one shared FiberState")
         samples = fiber.crosstalk.mix_rayleigh(tuple(core.rayleigh for core in cores),
                                                fiber.xt_db_per_km, xp=xp)
         cores = tuple(replace(core, rayleigh=sample) for core, sample in zip(cores, samples))
+        cores = _coupled_point_cores(fiber, cores, xp)
     responses = tuple(compute_response(core, probe, item, max_order=max_order, xp=xp)
                       for core, item in zip(cores, states))
     xp, _ = complex_arrays(*(item.reflection for item in responses),
@@ -169,43 +175,75 @@ def _multicore_response(fiber, probe, state, max_order, xp):
     reflection = xp.stack(tuple(item.reflection for item in responses), axis=0)
     transmission = xp.stack(tuple(item.transmission for item in responses), axis=0)
     if fiber.crosstalk is not None:
-        valid = _common_rayleigh_path(fiber.cores, xp)
+        valid = _common_coupled_path(fiber.cores, xp)
         reflection = xp.where(valid, reflection, xp.full_like(reflection, complex(float("nan"))))
         transmission = xp.where(valid, transmission, xp.full_like(transmission, complex(float("nan"))))
     return MultiCoreResponse(probe, reflection=reflection, transmission=transmission)
 
 
-def _common_rayleigh_path(cores, xp):
+def _coupled_point_cores(fiber, cores, xp):
+    """Mix effective left returns on internal copies, keeping the original transmissions."""
+    reference = cores[0].elements
+    positions = tuple(element.position for element in reference)
+    if any(tuple(element.position for element in core.elements) != positions for core in cores[1:]):
+        raise NotImplementedError("coupled point cores require common reflector positions")
+    if not reference:
+        return cores
+    columns = []
+    for position in positions:
+        matches = np.flatnonzero(fiber.crosstalk.positions == position)
+        if len(matches) != 1:
+            raise NotImplementedError("coupled reflectors must match unique crosstalk grid positions")
+        columns.append(int(matches[0]))
+    count = fiber.n_cores*len(reference)
+    xp, arrays = complex_arrays(*(element.r_left for core in cores for element in core.elements),
+                                fiber.crosstalk.phases, fiber.xt_db_per_km, xp=xp)
+    profile = xp.reshape(xp.stack(arrays[:count]), (fiber.n_cores, len(reference)))
+    _, (phases,) = real_arrays(fiber.crosstalk.phases, xp=xp)
+    selected = xp.stack(tuple(phases[:, column] for column in columns), axis=1)
+    mixed = crosstalk_from_phases(profile, xp.asarray(positions, dtype=xp.float64),
+                                  fiber.xt_db_per_km, selected,
+                                  topology=fiber.crosstalk.topology, xp=xp)
+    return tuple(replace(core, elements=tuple(replace(element, r_left=mixed[index, point])
+                                              for point, element in enumerate(core.elements)))
+                 for index, core in enumerate(cores))
+
+
+def _common_coupled_path(cores, xp):
     """Check fixed layout on the host and compare numerical path data natively."""
     reference = cores[0]
     valid = xp.asarray(True)
     for core in cores[1:]:
         if len(core.sections) != len(reference.sections):
-            raise NotImplementedError("coupled Rayleigh cores require a common section layout")
+            raise NotImplementedError("coupled cores require a common section layout")
         for left, right in zip(reference.sections, core.sections):
             if (left.start, left.end) != (right.start, right.end):
-                raise NotImplementedError("coupled Rayleigh cores require a common section layout")
+                raise NotImplementedError("coupled cores require a common section layout")
             values = [(left.attenuation, right.attenuation)]
             values.extend((getattr(left.optics, name), getattr(right.optics, name)) for name in _GUIDE_PARAMETERS)
             first, second = left.optics.bend_loss, right.optics.bend_loss
             if (first is None) != (second is None):
-                raise NotImplementedError("coupled Rayleigh cores require common bend-loss grids")
+                raise NotImplementedError("coupled cores require common bend-loss grids")
             if first is not None:
                 if (not np.array_equal(first.curvatures, second.curvatures)
                         or not np.array_equal(first.frequencies, second.frequencies)):
-                    raise NotImplementedError("coupled Rayleigh cores require common bend-loss grids")
+                    raise NotImplementedError("coupled cores require common bend-loss grids")
                 values.append((first.attenuation, second.attenuation))
             for a, b in values:
                 _, (a, b) = real_arrays(a, b, xp=xp)
                 valid = valid & xp.all(a == b)
         first, second = reference.index_perturbation, core.index_perturbation
         if (first is None) != (second is None):
-            raise NotImplementedError("coupled Rayleigh cores require a common index-profile layout")
+            raise NotImplementedError("coupled cores require a common index-profile layout")
         if first is not None:
             if not np.array_equal(first.positions, second.positions):
-                raise NotImplementedError("coupled Rayleigh cores require a common index-profile layout")
+                raise NotImplementedError("coupled cores require a common index-profile layout")
             _, (a, b) = real_arrays(first.values, second.values, xp=xp)
             valid = valid & xp.all(a == b)
+        for first, second in zip(reference.elements, core.elements):
+            _, (a, b, c, d) = complex_arrays(first.t_left_to_right, second.t_left_to_right,
+                                             first.t_right_to_left, second.t_right_to_left, xp=xp)
+            valid = valid & xp.all(a == b) & xp.all(c == d)
     return valid
 
 
