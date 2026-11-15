@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 
 from .backends import complex_arrays, real_arrays
 from .probe import Probe
-from .propagation import optical_path, point_response, rayleigh_response
+from .propagation import multiple_point_response, optical_path, point_response, rayleigh_response
+from .propagation.paths import _check_max_order
+from .scattering import PointReflector
 from .state import FiberState
 from .state.state import FIELD_NAMES
 
@@ -38,14 +40,18 @@ class Response:
         return f"Response(shape={self.shape})"
 
 
-def compute_response(fiber, probe, state=None, *, xp=None):
-    """One reflection per path and unreflected transmission at probe samples.
+def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
+    """Complex reflection and direct transmission at the probe samples.
 
-    A varying state is frozen at each probe.time sample, throughout that
-    sample's propagation. The original probe and stored disorder are kept.
+    max_order is a fixed integer: 1 gives the direct point, FBG and Rayleigh
+    returns; 2 and 3 add repeated PointReflector paths with up to
+    2*max_order-1 reflections. Transmission is the direct one-way field.
+    A varying state is frozen at each probe.time sample for the whole path,
+    including repeated passages. The original probe and disorder are kept.
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
+    _check_max_order(max_order)
     state = FiberState() if state is None else state
     if not isinstance(state, FiberState):
         raise TypeError("state must be a FiberState")
@@ -57,6 +63,8 @@ def compute_response(fiber, probe, state=None, *, xp=None):
         parameters.append(fiber.rayleigh.coefficients)
     for element in fiber.elements:
         parameters.extend(element._parameters())
+        if max_order > 1 and isinstance(element, PointReflector):
+            parameters.append(element.r_right)
     for name in FIELD_NAMES:
         state_field = getattr(state, name)
         for term in state_field.terms:
@@ -67,14 +75,14 @@ def compute_response(fiber, probe, state=None, *, xp=None):
         parameters.append(probe.time)
     xp, _ = complex_arrays(*path._parameters(probe.frequency, extra=parameters), xp=xp)
     if state.is_static:
-        reflection, transmission = _static_response(fiber, probe.frequency, state, xp)
+        reflection, transmission = _static_response(fiber, probe.frequency, state, max_order, xp)
     else:
         _, (frequency, time) = real_arrays(probe.frequency, probe.time, xp=xp)
         frequency, time = xp.reshape(frequency, (-1,)), xp.reshape(time, (-1,))
         reflected, transmitted = [], []
         for index in range(frequency.shape[0]):
             frozen = state.at_time(time[index], xp=xp)
-            r, t = _static_response(fiber, frequency[index], frozen, xp)
+            r, t = _static_response(fiber, frequency[index], frozen, max_order, xp)
             reflected.append(r)
             transmitted.append(t)
         reflection = (xp.reshape(xp.stack(reflected), probe.shape) if reflected
@@ -84,10 +92,13 @@ def compute_response(fiber, probe, state=None, *, xp=None):
     return Response(probe, reflection=reflection, transmission=transmission)
 
 
-def _static_response(fiber, frequency, state, xp):
+def _static_response(fiber, frequency, state, max_order, xp):
     path = optical_path(fiber, state)
     reflection = (point_response(fiber, frequency, state, xp=xp)
                   + rayleigh_response(fiber, frequency, state, xp=xp))
+    if max_order > 1:
+        reflection = reflection + multiple_point_response(fiber, frequency, state,
+                                                           max_order=max_order, xp=xp)
     transmission = path.transmission(0., fiber.length, frequency, xp=xp)
     for element in fiber.elements:
         _, (forward,) = complex_arrays(element.t_left_to_right, xp=xp)

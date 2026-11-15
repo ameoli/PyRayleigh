@@ -7,6 +7,13 @@ from ..fiber import Fiber
 from ..scattering import PointReflector
 
 
+def _check_max_order(max_order):
+    if isinstance(max_order, bool) or not isinstance(max_order, Integral):
+        raise TypeError("max_order must be a fixed integer")
+    if not 1 <= max_order <= 3:
+        raise ValueError("max_order must be 1, 2 or 3")
+
+
 def point_reflection_paths(fiber, *, max_order=2):
     """Return tuples of reflection-event indices into fiber.elements.
 
@@ -20,10 +27,7 @@ def point_reflection_paths(fiber, *, max_order=2):
     """
     if not isinstance(fiber, Fiber):
         raise TypeError("fiber must be a Fiber")
-    if isinstance(max_order, bool) or not isinstance(max_order, Integral):
-        raise TypeError("max_order must be a fixed integer")
-    if not 1 <= max_order <= 3:
-        raise ValueError("max_order must be 1, 2 or 3")
+    _check_max_order(max_order)
     indices = tuple(index for index, element in enumerate(fiber.elements)
                     if isinstance(element, PointReflector))
     paths = []
