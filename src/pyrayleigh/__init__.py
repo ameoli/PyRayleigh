@@ -12,4 +12,4 @@ from .propagation import (OpticalPath, multiple_point_response, optical_path, po
 from .scattering import (CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
                          crosstalk_from_phases, crosstalk_pairs, generate_crosstalk, generate_rayleigh,
                          lossless_reflector, rayleigh_from_normals, weak_fbg_reflection)
-from .response import Response, compute_response
+from .response import MultiCoreResponse, Response, compute_response
