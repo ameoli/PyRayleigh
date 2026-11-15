@@ -1,12 +1,15 @@
 """Reflection and direct transmission at the samples of a probe."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+
+import numpy as np
 
 from .backends import complex_arrays, real_arrays
 from .fiber import MultiCoreFiber
 from .probe import Probe
 from .propagation import multiple_point_response, optical_path, point_response, rayleigh_response
 from .propagation.paths import _check_max_order
+from .propagation.phase import _GUIDE_PARAMETERS
 from .scattering import PointReflector
 from .state import FiberState
 from .state.state import FIELD_NAMES
@@ -84,9 +87,12 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
     A varying state is frozen at each probe.time sample for the whole path,
     including repeated passages. The original probe and disorder are kept.
 
-    An independent MultiCoreFiber returns MultiCoreResponse. state may be
-    shared or contain one FiberState or None per core. Active multicore
-    crosstalk is not evaluated by this response function yet.
+    MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
+    shared state or one FiberState or None per core. Active crosstalk
+    currently supports Rayleigh-only cores with a shared state and common
+    propagation. Local coefficients are mixed before propagation. Different
+    fixed path layouts raise NotImplementedError; unequal native path
+    parameters give NaN fields, keeping the comparison traceable with JAX.
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
@@ -134,8 +140,6 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
 
 
 def _multicore_response(fiber, probe, state, max_order, xp):
-    if fiber.crosstalk is not None:
-        raise NotImplementedError("multicore response with active crosstalk is not implemented")
     if state is None or isinstance(state, FiberState):
         states = (state,)*fiber.n_cores
     else:
@@ -149,13 +153,60 @@ def _multicore_response(fiber, probe, state, max_order, xp):
             raise ValueError("state must contain one entry per core")
         if any(item is not None and not isinstance(item, FiberState) for item in states):
             raise TypeError("per-core states must be FiberState objects or None")
+    cores = fiber.cores
+    if fiber.crosstalk is not None:
+        if any(core.elements for core in cores):
+            raise NotImplementedError("active crosstalk currently supports Rayleigh-only cores")
+        if any(item is not states[0] for item in states[1:]):
+            raise NotImplementedError("coupled Rayleigh response requires one shared FiberState")
+        samples = fiber.crosstalk.mix_rayleigh(tuple(core.rayleigh for core in cores),
+                                               fiber.xt_db_per_km, xp=xp)
+        cores = tuple(replace(core, rayleigh=sample) for core, sample in zip(cores, samples))
     responses = tuple(compute_response(core, probe, item, max_order=max_order, xp=xp)
-                      for core, item in zip(fiber.cores, states))
+                      for core, item in zip(cores, states))
     xp, _ = complex_arrays(*(item.reflection for item in responses),
                             *(item.transmission for item in responses), xp=xp)
-    return MultiCoreResponse(probe,
-                             reflection=xp.stack(tuple(item.reflection for item in responses), axis=0),
-                             transmission=xp.stack(tuple(item.transmission for item in responses), axis=0))
+    reflection = xp.stack(tuple(item.reflection for item in responses), axis=0)
+    transmission = xp.stack(tuple(item.transmission for item in responses), axis=0)
+    if fiber.crosstalk is not None:
+        valid = _common_rayleigh_path(fiber.cores, xp)
+        reflection = xp.where(valid, reflection, xp.full_like(reflection, complex(float("nan"))))
+        transmission = xp.where(valid, transmission, xp.full_like(transmission, complex(float("nan"))))
+    return MultiCoreResponse(probe, reflection=reflection, transmission=transmission)
+
+
+def _common_rayleigh_path(cores, xp):
+    """Check fixed layout on the host and compare numerical path data natively."""
+    reference = cores[0]
+    valid = xp.asarray(True)
+    for core in cores[1:]:
+        if len(core.sections) != len(reference.sections):
+            raise NotImplementedError("coupled Rayleigh cores require a common section layout")
+        for left, right in zip(reference.sections, core.sections):
+            if (left.start, left.end) != (right.start, right.end):
+                raise NotImplementedError("coupled Rayleigh cores require a common section layout")
+            values = [(left.attenuation, right.attenuation)]
+            values.extend((getattr(left.optics, name), getattr(right.optics, name)) for name in _GUIDE_PARAMETERS)
+            first, second = left.optics.bend_loss, right.optics.bend_loss
+            if (first is None) != (second is None):
+                raise NotImplementedError("coupled Rayleigh cores require common bend-loss grids")
+            if first is not None:
+                if (not np.array_equal(first.curvatures, second.curvatures)
+                        or not np.array_equal(first.frequencies, second.frequencies)):
+                    raise NotImplementedError("coupled Rayleigh cores require common bend-loss grids")
+                values.append((first.attenuation, second.attenuation))
+            for a, b in values:
+                _, (a, b) = real_arrays(a, b, xp=xp)
+                valid = valid & xp.all(a == b)
+        first, second = reference.index_perturbation, core.index_perturbation
+        if (first is None) != (second is None):
+            raise NotImplementedError("coupled Rayleigh cores require a common index-profile layout")
+        if first is not None:
+            if not np.array_equal(first.positions, second.positions):
+                raise NotImplementedError("coupled Rayleigh cores require a common index-profile layout")
+            _, (a, b) = real_arrays(first.values, second.values, xp=xp)
+            valid = valid & xp.all(a == b)
+    return valid
 
 
 def _static_response(fiber, frequency, state, max_order, xp):
