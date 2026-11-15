@@ -151,8 +151,8 @@ def test_fixed_point_layout_and_phase_columns_are_checked(kind, empty):
 
 @pytest.mark.parametrize("order", [2, 3])
 @pytest.mark.parametrize("empty", [False, True])
-def test_multiple_point_paths_remain_explicitly_unsupported_with_crosstalk(order, empty):
-    with pytest.raises(NotImplementedError, match="max_order=1"):
+def test_coupled_ghosts_require_phase_columns_even_for_empty_probes(order, empty):
+    with pytest.raises(NotImplementedError, match="ghost positions must match unique crosstalk grid positions"):
         compute_response(make_model(), Probe([]) if empty else Probe(REFERENCE), max_order=order)
 
 

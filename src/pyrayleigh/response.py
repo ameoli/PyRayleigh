@@ -1,6 +1,7 @@
 """Reflection and direct transmission at the samples of a probe."""
 
 from dataclasses import dataclass, field, replace
+import math
 
 import numpy as np
 
@@ -8,7 +9,8 @@ from .backends import complex_arrays, real_arrays
 from .fiber import MultiCoreFiber
 from .probe import Probe
 from .propagation import multiple_point_response, optical_path, point_response, rayleigh_response
-from .propagation.paths import _check_max_order
+from .propagation.multiple import _multiple_point_returns
+from .propagation.paths import _check_max_order, point_reflection_paths
 from .propagation.phase import _GUIDE_PARAMETERS
 from .scattering import PointReflector, crosstalk_from_phases
 from .state import FiberState
@@ -89,14 +91,16 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
-    supports Rayleigh and direct point returns with a shared state and common
+    supports Rayleigh and point returns with a shared state and common
     propagation. Points must share positions and match unique crosstalk grid
     entries; their transmission coefficients must agree between cores.
     Weak FBG returns stay per core, outside crosstalk, as in PyOFDR.
-    Multiple point reflections with crosstalk remain unsupported.
-    Rayleigh and point coefficients are mixed before propagation. Different fixed path
-    layouts raise NotImplementedError; unequal native path parameters give
-    NaN fields, keeping the comparison traceable with JAX.
+    Multiple returns use the original point coefficients before mixing their
+    fields. Each apparent position must match one crosstalk grid entry,
+    allowing floating-point round-off. No clipping or interpolation is done.
+    Rayleigh and direct point coefficients are mixed before propagation.
+    Different fixed path layouts raise NotImplementedError; unequal native
+    path parameters give NaN fields, keeping the comparison traceable with JAX.
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
@@ -159,26 +163,71 @@ def _multicore_response(fiber, probe, state, max_order, xp):
             raise TypeError("per-core states must be FiberState objects or None")
     cores = fiber.cores
     if fiber.crosstalk is not None:
-        if max_order > 1 and any(isinstance(element, PointReflector)
-                                 for core in cores for element in core.elements):
-            raise NotImplementedError("coupled point returns currently require max_order=1")
         if any(item is not states[0] for item in states[1:]):
             raise NotImplementedError("coupled response requires one shared FiberState")
         samples = fiber.crosstalk.mix_rayleigh(tuple(core.rayleigh for core in cores),
                                                fiber.xt_db_per_km, xp=xp)
         cores = tuple(replace(core, rayleigh=sample) for core, sample in zip(cores, samples))
         cores = _coupled_point_cores(fiber, cores, xp)
-    responses = tuple(compute_response(core, probe, item, max_order=max_order, xp=xp)
+    order = 1 if fiber.crosstalk is not None else max_order
+    responses = tuple(compute_response(core, probe, item, max_order=order, xp=xp)
                       for core, item in zip(cores, states))
     xp, _ = complex_arrays(*(item.reflection for item in responses),
-                            *(item.transmission for item in responses), xp=xp)
+                            *(item.transmission for item in responses),
+                            *(element.r_right for core in fiber.cores for element in core.elements
+                              if max_order > 1 and isinstance(element, PointReflector)), xp=xp)
     reflection = xp.stack(tuple(item.reflection for item in responses), axis=0)
     transmission = xp.stack(tuple(item.transmission for item in responses), axis=0)
     if fiber.crosstalk is not None:
+        if max_order > 1:
+            reflection = reflection + _coupled_multiple_response(fiber, probe, states[0], max_order, xp)
         valid = _common_coupled_path(fiber.cores, xp)
         reflection = xp.where(valid, reflection, xp.full_like(reflection, complex(float("nan"))))
         transmission = xp.where(valid, transmission, xp.full_like(transmission, complex(float("nan"))))
     return MultiCoreResponse(probe, reflection=reflection, transmission=transmission)
+
+
+def _coupled_multiple_response(fiber, probe, state, max_order, xp):
+    """Mix complete source-core ghost fields using the apparent-position phases."""
+    reference = fiber.cores[0]
+    routes = tuple(route for route in point_reflection_paths(reference, max_order=max_order) if len(route) > 1)
+    positions = tuple(math.fsum(reference.elements[index].position if event % 2 == 0
+                               else -reference.elements[index].position
+                               for event, index in enumerate(route)) for route in routes)
+    columns = []
+    for position in positions:
+        matches = np.flatnonzero(np.isclose(fiber.crosstalk.positions, position,
+                                            rtol=8.*np.finfo(float).eps, atol=0.))
+        if len(matches) != 1:
+            raise NotImplementedError("ghost positions must match unique crosstalk grid positions")
+        columns.append(int(matches[0]))
+    state = FiberState() if state is None else state
+    _, (phases,) = real_arrays(fiber.crosstalk.phases, xp=xp)
+    _, (frequency,) = real_arrays(probe.frequency, xp=xp)
+
+    def static(frequency, frozen):
+        shape = (fiber.n_cores,) + frequency.shape
+        result = xp.zeros(shape, dtype=xp.complex128)
+        returns = tuple(_multiple_point_returns(core, frequency, frozen, max_order=max_order, xp=xp)[2]
+                        for core in fiber.cores)
+        count = math.prod(frequency.shape)
+        for position, column, fields in zip(positions, columns, zip(*returns)):
+            profile = xp.reshape(xp.stack(tuple(field for _, field in fields), axis=0), (fiber.n_cores, count))
+            selected = xp.broadcast_to(phases[:, column, None], (len(fiber.crosstalk.pairs), count))
+            mixed = crosstalk_from_phases(profile, xp.full((count,), position, dtype=xp.float64),
+                                          fiber.xt_db_per_km, selected,
+                                          topology=fiber.crosstalk.topology, xp=xp)
+            result = result + xp.reshape(mixed, shape)
+        return result
+
+    if state.is_static:
+        return static(frequency, state)
+    _, (time,) = real_arrays(probe.time, xp=xp)
+    frequency, time = xp.reshape(frequency, (-1,)), xp.reshape(time, (-1,))
+    values = [static(frequency[index], state.at_time(time[index], xp=xp)) for index in range(frequency.shape[0])]
+    if not values:
+        return xp.zeros((fiber.n_cores,) + probe.shape, dtype=xp.complex128)
+    return xp.reshape(xp.stack(values, axis=1), (fiber.n_cores,) + probe.shape)
 
 
 def _coupled_point_cores(fiber, cores, xp):
