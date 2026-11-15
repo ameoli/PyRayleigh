@@ -116,8 +116,9 @@ class CrosstalkRealization:
         """Return new Rayleigh samples after mixing their local coefficients.
 
         There is one sample per core, on identical positions and cell edges.
-        Positions must match this crosstalk sample. This operation mixes the
-        supplied reference coefficients; it evaluates no propagation or state.
+        Positions must match the first columns of this crosstalk sample;
+        extra columns are kept for point and multiple returns. This operation
+        mixes the supplied reference coefficients; it evaluates no propagation or state.
         With a common core path, the results can use the single-core solver.
         Core-dependent propagation and state are outside this operation.
         Stored source samples and crosstalk phases are retained.
@@ -128,8 +129,9 @@ class CrosstalkRealization:
         if any(not isinstance(sample, RayleighRealization) for sample in samples):
             raise TypeError("samples must contain only RayleighRealization objects")
         reference = samples[0]
-        if not np.array_equal(reference.positions, self.positions):
-            raise ValueError("crosstalk positions must match the Rayleigh positions")
+        count = reference.cell_count
+        if not np.array_equal(reference.positions, self.positions[:count]):
+            raise ValueError("crosstalk positions must start with the Rayleigh positions")
         for sample in samples:
             if (not np.array_equal(sample.positions, reference.positions)
                     or not np.array_equal(sample.edges, reference.edges)):
@@ -137,7 +139,10 @@ class CrosstalkRealization:
         xp, arrays = complex_arrays(*(sample.coefficients for sample in samples),
                                     self.phases, xt_db_per_km, xp=xp)
         profile = xp.stack(arrays[:self.n_cores], axis=0)
-        mixed = self.mix(profile, xt_db_per_km, xp=xp)
+        _, (phases,) = real_arrays(self.phases, xp=xp)
+        positions = xp.asarray(reference.positions.tolist(), dtype=xp.float64)
+        mixed = crosstalk_from_phases(profile, positions, xt_db_per_km, phases[:, :count],
+                                      topology=self.topology, xp=xp)
         return tuple(RayleighRealization(mixed[core, :], sample.positions, sample.edges)
                      for core, sample in enumerate(samples))
 
@@ -146,12 +151,14 @@ class CrosstalkRealization:
                 f"n_positions={self.position_count}, topology={self.topology!r})")
 
 
-def generate_crosstalk(n_cores, positions, seed, *, topology="linear", xp=None):
+def generate_crosstalk(n_cores, positions, seed, *, topology="linear", extra_positions=(), xp=None):
     """Draw U(0, 2*pi) phases once using a private NumPy PCG64 stream.
 
     Draws follow PyOFDR's directed-pair order and are identical in every
     backend. seed is the stream seed; PyOFDR keeps its component seed
     derivation. The returned sample is independent of the coupling level.
+    Extra fixed positions are appended, ignoring repeats and positions already
+    in the base grid, allowing round-off. The base columns keep their original seeded phases.
     """
     if isinstance(seed, (bool, np.bool_)):
         raise ValueError("seed must be a nonnegative integer")
@@ -163,7 +170,18 @@ def generate_crosstalk(n_cores, positions, seed, *, topology="linear", xp=None):
         raise ValueError("seed must be a nonnegative integer")
     pairs = crosstalk_pairs(n_cores, topology)
     positions = _fixed_positions(positions, "positions")
+    extra = _fixed_positions(extra_positions, "extra_positions")
+    if np.any(extra < 0.):
+        raise ValueError("extra_positions must be nonnegative")
+    additional = []
+    for position in extra:
+        known = np.concatenate((positions, additional))
+        if not np.any(np.isclose(known, position, rtol=8.*np.finfo(float).eps, atol=0.)):
+            additional.append(position)
     rng = np.random.Generator(np.random.PCG64(seed))
     phases = rng.uniform(0., 2.*np.pi, (len(pairs), len(positions)))
+    extra_phases = rng.uniform(0., 2.*np.pi, (len(pairs), len(additional)))
+    positions = np.concatenate((positions, additional))
+    phases = np.concatenate((phases, extra_phases), axis=1)
     _, (phases,) = real_arrays(phases, xp=xp)
     return CrosstalkRealization(n_cores, positions, phases, topology)

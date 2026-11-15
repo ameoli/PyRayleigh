@@ -242,7 +242,8 @@ def _coupled_point_cores(fiber, cores, xp):
         return cores
     columns = []
     for position in positions:
-        matches = np.flatnonzero(fiber.crosstalk.positions == position)
+        matches = np.flatnonzero(np.isclose(fiber.crosstalk.positions, position,
+                                            rtol=8.*np.finfo(float).eps, atol=0.))
         if len(matches) != 1:
             raise NotImplementedError("coupled reflectors must match unique crosstalk grid positions")
         columns.append(int(matches[0]))

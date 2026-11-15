@@ -15,8 +15,9 @@ class MultiCoreFiber:
 
     Cores share length, reference temperature and declared frequency band.
     Their native optical parameters and stored disorder are retained.
-    Optional crosstalk currently refers to an identical Rayleigh grid in
-    every core. Its level is a finite native scalar in dB/km. Only dtype
+    Optional crosstalk starts with an identical Rayleigh grid in every core.
+    Further phase columns can serve points and ghosts, also beyond the fiber.
+    Its level is a finite native scalar in dB/km. Only dtype
     and shape of the level are checked. This class stores the layout;
     it applies no mixing, propagation or state on construction.
     """
@@ -51,7 +52,7 @@ class MultiCoreFiber:
         edges = cores[0].rayleigh.edges
         for core in cores:
             sample = core.rayleigh
-            if (not np.array_equal(sample.positions, self.crosstalk.positions)
+            if (not np.array_equal(sample.positions, self.crosstalk.positions[:sample.cell_count])
                     or not np.array_equal(sample.edges, edges)):
                 raise ValueError("coupled cores must share Rayleigh positions and cell edges")
 
@@ -75,12 +76,13 @@ class MultiCoreFiber:
     def frequency_max(self):
         return self.cores[0].frequency_max
 
-    def with_crosstalk(self, seed, xt_db_per_km, *, topology="linear", xp=None):
-        """Return a copy with a new stored phase sample, without changing the cores."""
+    def with_crosstalk(self, seed, xt_db_per_km, *, topology="linear", extra_positions=(), xp=None):
+        """Draw stored phases, optionally appending fixed point or ghost positions."""
         sample = self.cores[0].rayleigh
         if sample is None:
             raise ValueError("crosstalk requires stored Rayleigh samples")
-        coupling = generate_crosstalk(self.n_cores, sample.positions, seed, topology=topology, xp=xp)
+        coupling = generate_crosstalk(self.n_cores, sample.positions, seed, topology=topology,
+                                     extra_positions=extra_positions, xp=xp)
         return replace(self, crosstalk=coupling, xt_db_per_km=xt_db_per_km)
 
     def __repr__(self):
