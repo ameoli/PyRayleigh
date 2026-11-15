@@ -7,7 +7,7 @@ import operator
 import numpy as np
 
 from ..backends import complex_arrays, real_arrays
-from .rayleigh import _fixed_positions
+from .rayleigh import RayleighRealization, _fixed_positions
 
 
 def crosstalk_pairs(n_cores, topology="linear"):
@@ -111,6 +111,35 @@ class CrosstalkRealization:
         positions = xp.asarray(self.positions.tolist(), dtype=xp.float64)
         return crosstalk_from_phases(profile, positions, xt_db_per_km, self.phases,
                                      topology=self.topology, xp=xp)
+
+    def mix_rayleigh(self, samples, xt_db_per_km, *, xp=None):
+        """Return new Rayleigh samples after mixing their local coefficients.
+
+        There is one sample per core, on identical positions and cell edges.
+        Positions must match this crosstalk sample. This operation mixes the
+        supplied reference coefficients; it evaluates no propagation or state.
+        With a common core path, the results can use the single-core solver.
+        Core-dependent propagation and state are outside this operation.
+        Stored source samples and crosstalk phases are retained.
+        """
+        samples = tuple(samples)
+        if len(samples) != self.n_cores:
+            raise ValueError("samples must contain one Rayleigh realization per core")
+        if any(not isinstance(sample, RayleighRealization) for sample in samples):
+            raise TypeError("samples must contain only RayleighRealization objects")
+        reference = samples[0]
+        if not np.array_equal(reference.positions, self.positions):
+            raise ValueError("crosstalk positions must match the Rayleigh positions")
+        for sample in samples:
+            if (not np.array_equal(sample.positions, reference.positions)
+                    or not np.array_equal(sample.edges, reference.edges)):
+                raise ValueError("Rayleigh samples must share positions and cell edges")
+        xp, arrays = complex_arrays(*(sample.coefficients for sample in samples),
+                                    self.phases, xt_db_per_km, xp=xp)
+        profile = xp.stack(arrays[:self.n_cores], axis=0)
+        mixed = self.mix(profile, xt_db_per_km, xp=xp)
+        return tuple(RayleighRealization(mixed[core, :], sample.positions, sample.edges)
+                     for core, sample in enumerate(samples))
 
     def __repr__(self):
         return (f"CrosstalkRealization(n_cores={self.n_cores}, "
