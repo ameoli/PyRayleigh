@@ -1,6 +1,7 @@
 """A fixed collection of core fibers and optional stored crosstalk."""
 
 from dataclasses import dataclass, field, replace
+import math
 
 import numpy as np
 
@@ -76,11 +77,24 @@ class MultiCoreFiber:
     def frequency_max(self):
         return self.cores[0].frequency_max
 
-    def with_crosstalk(self, seed, xt_db_per_km, *, topology="linear", extra_positions=(), xp=None):
-        """Draw stored phases, optionally appending fixed point or ghost positions."""
+    def with_crosstalk(self, seed, xt_db_per_km, *, topology="linear", extra_positions=(), max_order=None, xp=None):
+        """Draw stored phases, optionally appending fixed point or ghost positions.
+
+        With max_order=1, 2 or 3, include the first core's point paths before
+        extra_positions. Coefficients are not inspected. Without max_order,
+        only the Rayleigh grid and explicit extra_positions are used.
+        """
         sample = self.cores[0].rayleigh
         if sample is None:
             raise ValueError("crosstalk requires stored Rayleigh samples")
+        if max_order is not None:
+            from ..propagation.paths import point_reflection_paths
+            reference = self.cores[0]
+            routes = point_reflection_paths(reference, max_order=max_order)
+            automatic = [math.fsum(reference.elements[index].position if event % 2 == 0
+                                    else -reference.elements[index].position
+                                    for event, index in enumerate(route)) for route in routes]
+            extra_positions = (*automatic, *extra_positions)
         coupling = generate_crosstalk(self.n_cores, sample.positions, seed, topology=topology,
                                      extra_positions=extra_positions, xp=xp)
         return replace(self, crosstalk=coupling, xt_db_per_km=xt_db_per_km)
