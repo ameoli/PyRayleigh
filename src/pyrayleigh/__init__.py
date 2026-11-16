@@ -6,7 +6,7 @@ from .fiber import (BendLossTable, Fiber, GuideOptics, MultiCoreFiber, Section, 
                     index_segments_profile, ornstein_uhlenbeck_index_from_normals,
                     ornstein_uhlenbeck_index_profile)
 from .probe import Probe
-from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory
+from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory, cox_strain
 from .propagation import (OpticalPath, multiple_point_response, optical_path, point_reflection_paths,
                            point_response, rayleigh_response)
 from .scattering import (CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
