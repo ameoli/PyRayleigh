@@ -2,6 +2,7 @@
 
 from itertools import combinations
 import math
+from numbers import Integral
 
 from ..backends import complex_arrays, real_arrays
 from ..scattering import PointReflector
@@ -32,6 +33,35 @@ def reciprocal_transmission_factors(losses, transmission, *, xp=None):
                 factor = factor*transmission[k - 1]
             travel[i][j] = travel[j][i] = factor
     return xp.stack([xp.stack(row) for row in travel])
+
+
+def point_path_amplitude(route, r_left, r_right, travel, *, xp=None):
+    """Field returned along a fixed odd sequence of point indices.
+
+    Reflection arrays share shape (..., n_points). travel is the common
+    one-way field matrix, with node 0 the input and point i at node i+1.
+    """
+    route = tuple(route)
+    if not route or len(route) % 2 == 0:
+        raise ValueError("route must contain an odd number of reflection events")
+    if any(isinstance(index, bool) or not isinstance(index, Integral) for index in route):
+        raise TypeError("route must contain fixed integer point indices")
+    xp, (r_left, r_right, travel) = complex_arrays(r_left, r_right, travel, xp=xp)
+    if r_left.ndim == 0 or r_left.shape != r_right.shape:
+        raise ValueError("reflection arrays must share shape (..., n_points)")
+    count = r_left.shape[-1]
+    if travel.shape != (count + 1, count + 1):
+        raise ValueError("travel must contain the input and all point nodes")
+    if any(index < 0 or index >= count for index in route):
+        raise ValueError("route index is outside the point arrays")
+    amplitude = xp.ones(r_left.shape[:-1], dtype=xp.complex128)
+    previous = 0
+    for event, current in enumerate(route):
+        amplitude = amplitude*travel[previous, current + 1]
+        coefficient = r_left[..., current] if event % 2 == 0 else r_right[..., current]
+        amplitude = amplitude*coefficient
+        previous = current + 1
+    return amplitude*travel[previous, 0]
 
 
 def multiple_point_response(fiber, frequency, state=None, *, max_order=2, xp=None):
