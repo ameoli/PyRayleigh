@@ -5,8 +5,33 @@ import math
 
 from ..backends import complex_arrays, real_arrays
 from ..scattering import PointReflector
+from ..units import db_to_linear
 from .paths import point_reflection_paths
 from .phase import optical_path
+
+
+def reciprocal_transmission_factors(losses, transmission, *, xp=None):
+    """One-way field factors between an input node and ordered point nodes.
+
+    losses contains cumulative distributed loss [dB], including the input.
+    transmission has one real field coefficient per point. Only points
+    strictly between the two endpoints are crossed.
+    """
+    xp, (losses, transmission) = real_arrays(losses, transmission, xp=xp)
+    if losses.ndim != 1 or losses.shape[0] == 0:
+        raise ValueError("losses must be a nonempty vector")
+    count = losses.shape[0]
+    if transmission.shape != (count - 1,):
+        raise ValueError("give one transmission coefficient per point")
+    one = xp.asarray(1., dtype=xp.float64)
+    travel = [[one]*count for _ in range(count)]
+    for i in range(count):
+        for j in range(i + 1, count):
+            factor = db_to_linear(-xp.abs(losses[j] - losses[i])/2., xp=xp)
+            for k in range(i + 1, j):
+                factor = factor*transmission[k - 1]
+            travel[i][j] = travel[j][i] = factor
+    return xp.stack([xp.stack(row) for row in travel])
 
 
 def multiple_point_response(fiber, frequency, state=None, *, max_order=2, xp=None):
