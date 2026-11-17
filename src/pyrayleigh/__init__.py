@@ -8,7 +8,7 @@ from .fiber import (BendLossTable, Fiber, GuideOptics, MultiCoreFiber, Section, 
 from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory, cox_strain
 from .propagation import (OpticalPath, multiple_point_response, optical_path, point_reflection_paths,
-                           point_response, rayleigh_response)
+                           point_response, rayleigh_response, reflection_paths_from_positions)
 from .scattering import (CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
                          crosstalk_from_phases, crosstalk_pairs, generate_crosstalk, generate_rayleigh,
                          lossless_reflector, rayleigh_coefficients_from_normals,
