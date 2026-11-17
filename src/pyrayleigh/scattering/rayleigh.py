@@ -84,6 +84,28 @@ def _rayleigh_edges(fiber, cell_length):
     return np.append(starts[starts < fiber.length], fiber.length)
 
 
+def rayleigh_coefficients_from_normals(normals, rate, cell_lengths, *, xp=None):
+    """Local coefficients sqrt(R*ds/2)*(re + i*im), without drawing random numbers.
+
+    normals has shape (N, 2); rate [1/m] and cell_lengths [m] are scalars
+    or vectors of length N. Zero-length cells give zero coefficients.
+    Rate derivatives require R > 0 in cells with positive length.
+    """
+    xp, (normals, rate, cell_lengths) = real_arrays(normals, rate, cell_lengths, xp=xp)
+    if normals.ndim != 2 or normals.shape[1] != 2:
+        raise ValueError("normals must have shape (N, 2)")
+    count = normals.shape[0]
+    if rate.shape not in ((), (count,)) or cell_lengths.shape not in ((), (count,)):
+        raise ValueError("rate and cell_lengths must be scalars or have one value per cell")
+    power = rate*cell_lengths/2.
+    empty = cell_lengths == 0.
+    amplitude = xp.sqrt(xp.where(empty, xp.ones_like(power), power))
+    amplitude = xp.astype(xp.where(empty, xp.zeros_like(amplitude), amplitude), xp.complex128)
+    i = xp.asarray(1j, dtype=xp.complex128)
+    return amplitude * (xp.astype(normals[:, 0], xp.complex128)
+                        + i*xp.astype(normals[:, 1], xp.complex128))
+
+
 def _sample_rayleigh(fiber, edges, normals, *, xp):
     xp, arrays = real_arrays(normals, *(section.rayleigh_coefficient
                                       for section in fiber.sections), xp=xp)
@@ -97,10 +119,7 @@ def _sample_rayleigh(fiber, edges, normals, *, xp):
         mask = xp.asarray((positions >= section.start) & (positions < section.end))
         rate = xp.where(mask, value, rate)
     widths = xp.asarray(np.diff(edges), dtype=xp.float64)
-    amplitude = xp.astype(xp.sqrt(rate*widths/2.), xp.complex128)
-    i = xp.asarray(1j, dtype=xp.complex128)
-    coefficients = amplitude * (xp.astype(normals[:, 0], xp.complex128)
-                                + i*xp.astype(normals[:, 1], xp.complex128))
+    coefficients = rayleigh_coefficients_from_normals(normals, rate, widths, xp=xp)
     return RayleighRealization(coefficients, positions, edges)
 
 
