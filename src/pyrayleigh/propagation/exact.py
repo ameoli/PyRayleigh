@@ -58,7 +58,7 @@ def _uniform_value(field, start, end):
 
 
 def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=()):
-    """A whole grating, with ordered local Rayleigh two-ports inside."""
+    """A whole grating, with ordered local scatterers inside."""
     fields = (state.axial_strain, state.temperature_change)
     positions = {position for position, _ in scatterers}
     edges = sorted({grating.start, grating.end, *positions, *(float(knot)
@@ -187,17 +187,19 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             raise NotImplementedError('a Bragg interval must lie within one section')
         if section.attenuation != 0. or section.optics.bend_loss is not None:
             raise NotImplementedError('background loss inside Bragg intervals is not supported yet')
-        if any(grating.start < point.position < grating.end for point in fiber.elements):
-            raise NotImplementedError('point elements inside Bragg intervals are not supported yet')
         scatterers = []
-        if sample is not None:
-            inside = np.flatnonzero((sample.positions > grating.start) & (sample.positions < grating.end))
-            for index in inside:
-                r, t = sample.coefficients[index], transmission[index]
-                scatterers.append((float(sample.positions[index]), TwoPort(r, -np.conj(r), t, t)))
-            if len(inside):
-                nodes = [node for node in nodes
-                    if not (node[2] == 1 and grating.start < node[0] < grating.end)]
+        inside = sorted((node for node in nodes if node[2] in (0, 1)
+            and grating.start < node[0] < grating.end), key=lambda node: (node[0], node[2]))
+        for position, _, kind, value in inside:
+            if kind == 1:
+                r, t = sample.coefficients[value], transmission[value]
+                block = TwoPort(r, -np.conj(r), t, t)
+            else:
+                block = value
+            scatterers.append((float(position), block))
+        if inside:
+            nodes = [node for node in nodes
+                if not (node[2] in (0, 1) and grating.start < node[0] < grating.end)]
         for name in ('curvature_x', 'curvature_y'):
             if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
                 raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
@@ -244,9 +246,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     may be piecewise constant, split at their profile knots. An explicit
     segment_length enables midpoint approximation of continuous gradients;
     compare refined meshes. Curvature and static index changes stay outside.
-    Stored Rayleigh scatterers are composed at their material positions,
-    including inside gratings. PointReflector elements may lie at the
-    grating boundaries or outside them.
+    PointReflector and stored Rayleigh scatterers are composed at their
+    material positions, including inside gratings.
     """
     from ..response import Response
 

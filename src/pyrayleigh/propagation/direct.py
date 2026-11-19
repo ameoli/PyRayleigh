@@ -12,8 +12,8 @@ def direct_response_consistent(fiber, probe, state=None, *, loss_convention,
 
     NumPy, one scalar core and a static state only. Background loss, point
     coefficients and stored Rayleigh depletion are shared with exact_response.
-    A Bragg interval is one block, including its internal CMT and Rayleigh
-    scattering. These internal paths remain in the direct block response.
+    A Bragg interval is one block, including its internal CMT, point and
+    Rayleigh scattering. Internal paths remain in the direct block response.
     denominator_tolerance also applies to its internal piecewise cascade.
     This path truncation need not conserve power for strong reflectors.
     """

@@ -76,6 +76,10 @@ def compute_response_diagnostics(fiber, probe, state=None, *, loss_convention,
         "rayleigh_cells": 0 if fiber.rayleigh is None else fiber.rayleigh.cell_count}
     if fiber.gratings:
         metadata.update(bragg_gratings=len(fiber.gratings), direct_scope='one_reflection_per_block')
+        points = tuple(int(sum(grating.start < point.position < grating.end
+            for point in fiber.elements)) for grating in fiber.gratings)
+        if any(points):
+            metadata['bragg_internal_points'] = points
         if fiber.rayleigh is not None:
             inside = tuple(int(np.count_nonzero((fiber.rayleigh.positions > grating.start)
                 & (fiber.rayleigh.positions < grating.end))) for grating in fiber.gratings)
