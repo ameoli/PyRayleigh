@@ -100,8 +100,9 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     an explicitly supplied max_order. denominator_tolerance is optional and
     forwarded to exact_response. These options are exclusive to exact.
     It does not support time-varying states, multicore fibers or WeakFBG.
-    Uniform intervals in fiber.gratings are reference-state Bragg blocks;
-    each must be contained in one lossless section, without internal scatterers.
+    Intervals in fiber.gratings accept uniform strain and temperature;
+    each needs one lossless section, without internal scatterers, curvature
+    or static index changes. Outside profiles use the normal path model.
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk

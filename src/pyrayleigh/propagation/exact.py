@@ -7,10 +7,28 @@ from ..backends import complex_arrays
 from ..fiber import Fiber, MultiCoreFiber
 from ..probe import Probe
 from ..scattering import PointReflector
-from ..state import FiberState
-from ..state.state import FIELD_NAMES
+from ..state import FiberState, Field
 from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, star
 from .phase import optical_path
+
+
+def _uniform_value(field, start, end):
+    """Check two interior points per linear piece, without averaging a gradient."""
+    if isinstance(field, Field) and field.is_zero:
+        return 0.
+    profiles = [term.profile for term in field.terms] if isinstance(field, Field) else [field]
+    knots = sorted({start, end, *(float(knot) for profile in profiles
+        for knot in profile.positions if start < knot < end)})
+    positions = []
+    for left, right in zip(knots[:-1], knots[1:]):
+        a, b = left+.25*(right-left), left+.75*(right-left)
+        if not left < a < b < right:
+            raise ValueError('Bragg profile interval is too small to sample reliably')
+        positions.extend((a, b))
+    values = field.value(np.asarray(positions))
+    if not np.all(values == values[0]):
+        raise NotImplementedError('Bragg perturbations must be uniform over each interval')
+    return values[0]
 
 
 def _static_blocks(fiber, probe, state, loss_convention):
@@ -28,9 +46,6 @@ def _static_blocks(fiber, probe, state, loss_convention):
         raise NotImplementedError("two-port responses require a static or frozen state")
     if any(not isinstance(point, PointReflector) for point in fiber.elements):
         raise NotImplementedError("two-port responses currently support PointReflector elements only")
-    if fiber.gratings and (fiber.index_perturbation is not None
-            or any(not getattr(state, name).is_zero for name in FIELD_NAMES)):
-        raise NotImplementedError('Bragg gratings currently require an empty reference state and no index profile')
 
     path = optical_path(fiber, state)
     parameters = path._parameters(probe.frequency, extra=path.loss._parameters())
@@ -86,7 +101,16 @@ def _static_blocks(fiber, probe, state, loss_convention):
             raise NotImplementedError('point elements inside Bragg intervals are not supported yet')
         if sample is not None and np.any((sample.positions > grating.start) & (sample.positions < grating.end)):
             raise NotImplementedError('Rayleigh scatterers inside Bragg intervals are not supported yet')
-        block = grating.two_port(frequency, section.optics)
+        strain = _uniform_value(state.axial_strain, grating.start, grating.end)
+        temperature = _uniform_value(state.temperature_change, grating.start, grating.end)
+        for name in ('curvature_x', 'curvature_y'):
+            if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
+                raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
+        if (fiber.index_perturbation is not None
+                and _uniform_value(fiber.index_perturbation, grating.start, grating.end) != 0.):
+            raise NotImplementedError('static index perturbations inside Bragg intervals are not supported yet')
+        block = grating.two_port(frequency, section.optics,
+            axial_strain=strain, temperature_change=temperature)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -121,8 +145,9 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
-    Uniform Bragg intervals require an unperturbed fiber and one lossless
-    section each. Point and Rayleigh scatterers may lie at their boundaries.
+    Each Bragg interval needs one lossless section and uniform strain and
+    temperature. Curvature and static index changes are allowed outside it.
+    Point and Rayleigh scatterers may lie at the interval boundaries.
     """
     from ..response import Response
 

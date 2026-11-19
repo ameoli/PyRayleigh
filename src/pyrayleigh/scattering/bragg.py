@@ -67,7 +67,8 @@ class BraggGrating:
     bragg_wavelength [m] fixes beta_B through the supplied reference guide.
     coupling [1/m] may be complex; its phase is referenced to start.
     Optical parameters remain native scalars; values are checked by two_port.
-    Geometry is fixed. This object evaluates an unperturbed, lossless grating.
+    Geometry and coupling are fixed in the material coordinate. Uniform
+    strain and temperature affect propagation, without changing coupling.
     """
 
     start: float
@@ -96,11 +97,13 @@ class BraggGrating:
     def _parameters(self):
         return self.bragg_wavelength, self.coupling
 
-    def two_port(self, frequency, optics):
+    def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0.):
         """NumPy optical fields at start/end, for absolute frequency [Hz].
 
-        optics is one uniform GuideOptics. Input-to-start propagation is
-        separate. No state profile or distributed background loss is applied.
+        optics is the uniform reference GuideOptics. Strain [1] and T-T_ref
+        [K] must be scalar and uniform over the interval. The Bragg material
+        period stays fixed; carrier phase uses that unperturbed frame.
+        Input-to-start propagation and background loss are separate.
         """
         from ..fiber import GuideOptics
         from ..propagation.cascade import TwoPort
@@ -108,11 +111,16 @@ class BraggGrating:
         if not isinstance(optics, GuideOptics):
             raise TypeError('optics must be a GuideOptics')
         parameters = (frequency, *self._parameters(), optics.frequency_ref,
-            optics.effective_index, optics.group_index, optics.gvd)
+            optics.effective_index, optics.group_index, optics.gvd,
+            axial_strain, temperature_change, optics.strain_phase_factor,
+            optics.strain_group_factor, optics.temperature_phase_factor, optics.temperature_group_factor)
         xp, arrays = complex_arrays(*parameters)
         if not apc.is_numpy_namespace(xp):
             raise NotImplementedError('BraggGrating.two_port currently supports NumPy only')
         _, (frequency, wavelength) = real_arrays(frequency, self.bragg_wavelength, xp=xp)
+        _, (strain, temperature) = real_arrays(axial_strain, temperature_change, xp=xp)
+        if strain.ndim != 0 or temperature.ndim != 0:
+            raise ValueError('grating strain and temperature must be uniform scalars')
         if any(not np.all(np.isfinite(value)) for value in arrays):
             raise ValueError('grating response parameters must be finite')
         if np.any(frequency <= 0.) or wavelength <= 0.:
@@ -125,6 +133,10 @@ class BraggGrating:
             delta_omega = 2*np.pi*(frequency-bragg_frequency)
             detuning = (optics.group_delay_per_length(bragg_frequency)*delta_omega
                 + .5*optics.gvd*delta_omega**2)
+            phase_change = optics.relative_phase_change(strain, temperature, xp=xp)
+            group_change = optics.relative_group_delay_change(strain, temperature, xp=xp)
+            detuning = (detuning+optics.reference_propagation_constant*phase_change
+                +optics.propagation_constant_offset(frequency)*group_change)
             envelope = uniform_bragg_two_port(detuning, self.coupling, self.length)
             carrier = (np.exp(-1j*optics.reference_propagation_constant*self.length)
                 *np.exp(-1j*optics.propagation_constant_offset(bragg_frequency)*self.length))
