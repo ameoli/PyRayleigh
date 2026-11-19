@@ -341,3 +341,8 @@ Coupled spatial refinement, Rayleigh statistics and exact JAX
 parity remain separate validation work. Reversal checks on mixed networks
 avoid coincident point/cell nodes: reversing those would also reverse their
 local composition order, which the current fixed tie convention does not allow.
+
+The reference-guide `rayleigh_resolution_report` estimates a proposed cell
+length against an optical band. Its advisory ratios and phase bounds do not
+establish convergence. See [Rayleigh sampling](rayleigh_sampling.md) for units,
+scope and the distinction between proposed and stored grids.
