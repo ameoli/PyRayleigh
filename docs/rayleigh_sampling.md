@@ -78,3 +78,45 @@ passivity. Independent grids need statistical comparisons; changing N with the
 same seed does not preserve one complex realization. A comparison of nearly
 the same fiber needs coupled refinement with an explicit phase/position rule.
 The report does not implement that refinement or validate the Gaussian law.
+
+## Independent-grid statistical example
+
+Run [rayleigh_statistics.ipynb](../examples/rayleigh_statistics.ipynb) for a
+first weak-scattering reference study. The fiber is uniform, 0.0625 m long,
+with n_eff=n_g=1.47, zero GVD, no point elements, zero background loss and
+rho*L=1e-4. The optical band is 10 GHz around 1550 nm, sampled at 65 frequencies.
+Each of four left-edge grids has its own 512-realization ensemble. Seeds are
+`120000 + 10000*grid_index + realization_index`; different grids are not coupled.
+
+Within one realization, exact, direct-consistent and legacy fields use the
+same stored sample. In this point-free case, `max_order=1` is the undepleted
+single-scattering field, with analytic Gaussian statistics. The notebook
+checks coefficient normalization, reflected power at one frequency, its fading
+CDF, complex frequency covariance and exact lossless energy conservation.
+Frequency bins within a realization are not treated as independent samples.
+
+The independent covariance references are a finite left-edge sum and the
+uniform continuum integral. The deterministic difference between these two
+references is distinguished from the measured ensemble error. In the reference
+run (core revision `4d9f7b7`, NumPy 2.5.4, complex128):
+
+| Cells | Cell/resolution | Max discrete-continuum covariance gap | Measured-discrete covariance RMS |
+|---|---|---|---|
+| 8 | 0.7662 | 0.18845 | 0.03470 |
+| 16 | 0.3831 | 0.06648 | 0.04399 |
+| 32 | 0.1915 | 0.03160 | 0.03715 |
+| 64 | 0.09577 | 0.01567 | 0.05312 |
+
+Covariance errors are normalized by rho*L. The nominal Monte Carlo standard
+error is about 1/sqrt(512)=0.0442 per frequency offset. Thus the measured error
+does not have to fall monotonically with cell count; more realizations are
+needed to resolve a grid bias below that uncertainty. Mean power and a fading
+CDF can look correct even on the coarse grid, so they are not convergence
+certificates by themselves.
+
+The exact/direct-consistent relative field differences are about 7e-5 to 8e-5
+in this weak case. Exact/legacy differences also include missing legacy
+depletion. This example does not establish convergence for strong backscatter,
+cavities, heterogeneous or perturbed fibers, and it does not implement coupled
+refinement. It adds a runnable example, with local audit scripts kept outside
+the repository test suite.
