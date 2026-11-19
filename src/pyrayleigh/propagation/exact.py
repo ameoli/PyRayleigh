@@ -13,6 +13,7 @@ from ..probe import Probe
 from ..scattering import PointReflector
 from ..state import FiberState, Field, FieldTerm
 from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, _check_tolerance, star
+from .loss import _curvature_crossings
 from .phase import optical_path
 
 
@@ -72,9 +73,19 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
         loads = [tuple(_uniform_value(field, a, b) for field in fields)
             for a, b in zip(edges[:-1], edges[1:])]
     else:
-        for left, right in zip(edges[:-1], edges[1:]):
-            for component in bending:
-                _uniform_value(component, left, right)
+        if bending:
+            cuts = set(edges)
+            for left, right in zip(edges[:-1], edges[1:]):
+                (x, dx), (y, dy) = (_midpoint_load(field, left, right) for field in bending)
+                x, y = x-.5*dx, y-.5*dy
+                if max(np.hypot(x, y), np.hypot(x+dx, y+dy)) > table.curvatures[-1]:
+                    raise ValueError('curvature inside a Bragg interval exceeds the bend-loss table')
+                fractions = _curvature_crossings(x, y, dx, dy, table.curvatures, np)
+                for fraction in fractions:
+                    position = left+float(fraction)*(right-left)
+                    if left < position < right:
+                        cuts.add(position)
+            edges = sorted(cuts)
         refined = []
         for left, right in zip(edges[:-1], edges[1:]):
             count = max(1, math.ceil((right-left)/grating.segment_length))
@@ -252,8 +263,10 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Each piece must be uniform unless segment_length is set.
     An explicit segment_length enables midpoint approximation of continuous
     gradients; compare refined meshes. Curvature only contributes through
-    optics.bend_loss; its components may be piecewise constant, split at their
-    profile knots. Continuous curvature gradients are not supported yet.
+    optics.bend_loss. Without a mesh its components must be piecewise constant.
+    With segment_length, curvature also uses midpoint samples, splitting at
+    table crossings and norm minima. Its upper table limit must hold over
+    each linear piece, including its end limits.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
     """
