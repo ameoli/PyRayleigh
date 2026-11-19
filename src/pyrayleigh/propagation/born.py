@@ -15,6 +15,8 @@ def point_response(fiber, frequency, state=None, *, xp=None):
     and stored parameters are evaluated without mutation.
     """
     path = optical_path(fiber, state)
+    if fiber.gratings:
+        raise NotImplementedError("Bragg gratings require compute_response(method='exact')")
     parameters = path.loss._parameters()
     for element in fiber.elements:
         parameters.extend(element._parameters())
@@ -51,6 +53,8 @@ def rayleigh_response(fiber, frequency, state=None, *, xp=None):
     Rayleigh samples themselves add no transmission step, as in PyOFDR.
     """
     path = optical_path(fiber, state)
+    if fiber.gratings:
+        raise NotImplementedError("Bragg gratings require compute_response(method='exact')")
     sample = fiber.rayleigh
     parameters = path.loss._parameters()
     if sample is not None:

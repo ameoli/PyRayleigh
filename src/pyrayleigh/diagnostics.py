@@ -73,4 +73,6 @@ def compute_response_diagnostics(fiber, probe, state=None, *, loss_convention,
         "model": "scalar_static", "backend": "numpy", "dtype": "complex128",
         "boundary": "matched_right", "denominator_tolerance": float(denominator_tolerance),
         "rayleigh_cells": 0 if fiber.rayleigh is None else fiber.rayleigh.cell_count}
+    if fiber.gratings:
+        metadata.update(bragg_gratings=len(fiber.gratings), direct_scope='one_reflection_per_block')
     return DiagnosticResponse(total, direct, metadata)

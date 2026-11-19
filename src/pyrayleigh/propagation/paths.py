@@ -51,6 +51,8 @@ def point_reflection_paths(fiber, *, max_order=2):
     """
     if not isinstance(fiber, Fiber):
         raise TypeError("fiber must be a Fiber")
+    if fiber.gratings:
+        raise NotImplementedError('point paths do not include extended Bragg gratings')
     indices = tuple(index for index, element in enumerate(fiber.elements)
                     if isinstance(element, PointReflector))
     positions = [fiber.elements[index].position for index in indices]

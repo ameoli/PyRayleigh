@@ -100,6 +100,8 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     an explicitly supplied max_order. denominator_tolerance is optional and
     forwarded to exact_response. These options are exclusive to exact.
     It does not support time-varying states, multicore fibers or WeakFBG.
+    Uniform intervals in fiber.gratings are reference-state Bragg blocks;
+    each must be contained in one lossless section, without internal scatterers.
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
@@ -135,6 +137,8 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     max_order = 1 if max_order is _UNSET else max_order
     _check_max_order(max_order)
     if isinstance(fiber, MultiCoreFiber):
+        if any(core.gratings for core in fiber.cores):
+            raise NotImplementedError("Bragg gratings require the scalar method='exact'")
         return _multicore_response(fiber, probe, state, max_order, xp)
     state = FiberState() if state is None else state
     if not isinstance(state, FiberState):
@@ -142,6 +146,8 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     if not state.is_static and probe.time is None:
         raise ValueError("a time-varying state needs probe.time for every sample")
     path = optical_path(fiber)
+    if fiber.gratings:
+        raise NotImplementedError("Bragg gratings require method='exact'")
     parameters = path.loss._parameters()
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)

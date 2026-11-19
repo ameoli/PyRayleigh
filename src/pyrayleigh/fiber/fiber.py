@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import math
 from numbers import Real
 
-from ..scattering import PointReflector, RayleighRealization, WeakFBG, generate_rayleigh
+from ..scattering import BraggGrating, PointReflector, RayleighRealization, WeakFBG, generate_rayleigh
 from ..state.fields import SpatialProfile
 from .section import Section
 
@@ -24,6 +24,7 @@ class Fiber:
     a point precedes any grating at the same position.
     An optional stored Rayleigh sample covers exactly [0, length].
     index_perturbation is an optional static delta n_eff(s) profile.
+    Extended Bragg intervals are stored in gratings and must not overlap.
     """
 
     fiber_id: str
@@ -35,6 +36,7 @@ class Fiber:
     elements: tuple = ()
     rayleigh: RayleighRealization | None = None
     index_perturbation: SpatialProfile | None = None
+    gratings: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.fiber_id, str):
@@ -51,6 +53,7 @@ class Fiber:
             raise ValueError("frequency_min must be smaller than frequency_max")
         self._check_sections()
         self._check_elements()
+        self._check_gratings()
         if self.rayleigh is not None:
             self._check_rayleigh()
         if (self.index_perturbation is not None
@@ -96,6 +99,17 @@ class Fiber:
             if left.position == right.position:
                 raise ValueError("elements must have distinct positions")
         object.__setattr__(self, "elements", elements)
+
+    def _check_gratings(self):
+        gratings = tuple(self.gratings)
+        if any(not isinstance(grating, BraggGrating) for grating in gratings):
+            raise TypeError('gratings must contain only BraggGrating objects')
+        gratings = tuple(sorted(gratings, key=lambda grating: grating.start))
+        if any(grating.end > self.length for grating in gratings):
+            raise ValueError('grating interval lies beyond the fiber length')
+        if any(left.end > right.start for left, right in zip(gratings[:-1], gratings[1:])):
+            raise ValueError('grating intervals must not overlap')
+        object.__setattr__(self, 'gratings', gratings)
 
     def _check_rayleigh(self):
         if not isinstance(self.rayleigh, RayleighRealization):

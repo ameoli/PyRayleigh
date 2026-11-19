@@ -1,4 +1,4 @@
-"""Scalar static NumPy reference, using stored point and Rayleigh two-ports."""
+"""Scalar static NumPy reference, using point, Rayleigh and Bragg two-ports."""
 
 import array_api_compat as apc
 import numpy as np
@@ -8,6 +8,7 @@ from ..fiber import Fiber, MultiCoreFiber
 from ..probe import Probe
 from ..scattering import PointReflector
 from ..state import FiberState
+from ..state.state import FIELD_NAMES
 from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, star
 from .phase import optical_path
 
@@ -27,6 +28,9 @@ def _static_blocks(fiber, probe, state, loss_convention):
         raise NotImplementedError("two-port responses require a static or frozen state")
     if any(not isinstance(point, PointReflector) for point in fiber.elements):
         raise NotImplementedError("two-port responses currently support PointReflector elements only")
+    if fiber.gratings and (fiber.index_perturbation is not None
+            or any(not getattr(state, name).is_zero for name in FIELD_NAMES)):
+        raise NotImplementedError('Bragg gratings currently require an empty reference state and no index profile')
 
     path = optical_path(fiber, state)
     parameters = path._parameters(probe.frequency, extra=path.loss._parameters())
@@ -36,6 +40,8 @@ def _static_blocks(fiber, probe, state, loss_convention):
         parameters.extend((section.rayleigh_coefficient, section.optics.thermal_expansion))
     for point in fiber.elements:
         parameters.extend((point.r_left, point.r_right, point.t_left_to_right, point.t_right_to_left))
+    for grating in fiber.gratings:
+        parameters.extend(grating._parameters())
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)
     xp, arrays = complex_arrays(*parameters)
@@ -59,7 +65,7 @@ def _static_blocks(fiber, probe, state, loss_convention):
     for point in fiber.elements:
         block = TwoPort(point.r_left, point.r_right, point.t_left_to_right, point.t_right_to_left)
         block.validate_passivity()
-        nodes.append((point.position, 0, block))
+        nodes.append((point.position, point.position, 0, block))
     sample = fiber.rayleigh
     if sample is not None:
         with np.errstate(over="ignore", under="ignore"):
@@ -68,25 +74,38 @@ def _static_blocks(fiber, probe, state, loss_convention):
             raise ValueError("Rayleigh coefficients must satisfy abs(r)**2 <= 1")
         transmission = np.sqrt(1.-power)
         for index, position in enumerate(sample.positions):
-            nodes.append((float(position), 1, index))
-    nodes.sort(key=lambda item: (item[0], item[1]))
+            nodes.append((float(position), float(position), 1, index))
+    for grating in fiber.gratings:
+        section = next((item for item in fiber.sections
+            if item.start <= grating.start and grating.end <= item.end), None)
+        if section is None:
+            raise NotImplementedError('a Bragg interval must lie within one section')
+        if section.attenuation != 0. or section.optics.bend_loss is not None:
+            raise NotImplementedError('background loss inside Bragg intervals is not supported yet')
+        if any(grating.start < point.position < grating.end for point in fiber.elements):
+            raise NotImplementedError('point elements inside Bragg intervals are not supported yet')
+        if sample is not None and np.any((sample.positions > grating.start) & (sample.positions < grating.end)):
+            raise NotImplementedError('Rayleigh scatterers inside Bragg intervals are not supported yet')
+        block = grating.two_port(frequency, section.optics)
+        nodes.append((grating.start, grating.end, 2, block))
+    nodes.sort(key=lambda item: (item[0], item[2]))
 
     def blocks():
         previous = 0.
-        for position, kind, value in nodes:
+        for position, end, kind, value in nodes:
             if position > previous:
                 p = path.transmission(previous, position, frequency, xp=xp)
                 propagation = TwoPort(0., 0., p, p)
                 propagation.validate_passivity()
                 yield position, propagation
-            if kind == 0:
-                block = value
-            else:
+            if kind == 1:
                 r = sample.coefficients[value]
                 t = transmission[value]
                 block = TwoPort(r, -np.conj(r), t, t)
+            else:
+                block = value
             yield position, block
-            previous = position
+            previous = end
         p = path.transmission(previous, fiber.length, frequency, xp=xp)
         propagation = TwoPort(0., 0., p, p)
         propagation.validate_passivity()
@@ -102,6 +121,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
+    Uniform Bragg intervals require an unperturbed fiber and one lossless
+    section each. Point and Rayleigh scatterers may lie at their boundaries.
     """
     from ..response import Response
 

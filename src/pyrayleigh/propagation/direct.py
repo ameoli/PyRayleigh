@@ -10,6 +10,7 @@ def direct_response_consistent(fiber, probe, state=None, *, loss_convention):
 
     NumPy, one scalar core and a static state only. Background loss, point
     coefficients and stored Rayleigh depletion are shared with exact_response.
+    A Bragg interval is one block, including its internal CMT reflections.
     This path truncation need not conserve power for strong reflectors.
     """
     from ..response import Response
