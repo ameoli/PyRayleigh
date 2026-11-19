@@ -57,7 +57,7 @@ def _uniform_value(field, start, end):
     return values[0]
 
 
-def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=()):
+def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=(), attenuation=0.):
     """A whole grating, with ordered local scatterers inside."""
     fields = (state.axial_strain, state.temperature_change)
     positions = {position for position, _ in scatterers}
@@ -89,7 +89,7 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
         edges, loads = merged_edges, merged_loads
     if not scatterers and all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
-            axial_strain=loads[0][0], temperature_change=loads[0][1])
+            axial_strain=loads[0][0], temperature_change=loads[0][1], attenuation=attenuation)
     result = None
     scatterer_index = 0
     for left, right, (strain, temperature) in zip(edges[:-1], edges[1:], loads):
@@ -102,7 +102,8 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
                 *np.exp(-2j*optics.propagation_constant_offset(bragg_frequency)*offset))
             coupling = coupling*phase
         piece = replace(grating, start=left, length=right-left, coupling=coupling)
-        block = piece.two_port(frequency, optics, axial_strain=strain, temperature_change=temperature)
+        block = piece.two_port(frequency, optics, axial_strain=strain,
+            temperature_change=temperature, attenuation=attenuation)
         position = left
         try:
             result = block if result is None else star(result, block,
@@ -185,8 +186,8 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             if item.start <= grating.start and grating.end <= item.end), None)
         if section is None:
             raise NotImplementedError('a Bragg interval must lie within one section')
-        if section.attenuation != 0. or section.optics.bend_loss is not None:
-            raise NotImplementedError('background loss inside Bragg intervals is not supported yet')
+        if section.optics.bend_loss is not None:
+            raise NotImplementedError('bend loss inside Bragg intervals is not supported yet')
         scatterers = []
         inside = sorted((node for node in nodes if node[2] in (0, 1)
             and grating.start < node[0] < grating.end), key=lambda node: (node[0], node[2]))
@@ -207,7 +208,7 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
                 and _uniform_value(fiber.index_perturbation, grating.start, grating.end) != 0.):
             raise NotImplementedError('static index perturbations inside Bragg intervals are not supported yet')
         block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance,
-            scatterers=scatterers)
+            scatterers=scatterers, attenuation=section.attenuation)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -242,10 +243,10 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
-    Each Bragg interval needs one lossless section. Strain and temperature
-    may be piecewise constant, split at their profile knots. An explicit
-    segment_length enables midpoint approximation of continuous gradients;
-    compare refined meshes. Curvature and static index changes stay outside.
+    Each Bragg interval needs one section, with its background attenuation.
+    Strain and temperature may be piecewise constant, split at profile knots.
+    An explicit segment_length enables midpoint approximation of continuous
+    gradients; compare refined meshes. Curvature and static index changes stay outside.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
     """

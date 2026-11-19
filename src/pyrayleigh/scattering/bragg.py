@@ -1,4 +1,4 @@
-"""Uniform, lossless coupled-mode sections and their optical reference planes."""
+"""Uniform coupled-mode sections and their optical reference planes."""
 
 from dataclasses import dataclass
 import math
@@ -11,46 +11,59 @@ from ..backends import complex_arrays, real_arrays
 from ..constants import SPEED_OF_LIGHT
 
 
-def uniform_bragg_two_port(detuning, coupling, length):
+def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
     """NumPy CMT solution, with detuning and complex coupling in 1/m.
 
-    length [m] is a finite nonnegative scalar; the other inputs broadcast.
+    length [m] and attenuation [1/m] are finite nonnegative scalars.
+    Detuning and coupling broadcast. Attenuation is background power loss.
     delta=beta-beta_B; the grating phase is carried by kappa.
-    The envelope equations are A'=-i*delta*A-i*kappa*B and
-    B'=i*conj(kappa)*A+i*delta*B, with A travelling right and B left.
+    A'=-(alpha/2+i*delta)*A-i*kappa*B and
+    B'=i*conj(kappa)*A+(alpha/2+i*delta)*B, with A travelling right and B left.
     Both ports use this common rotating frame: kappa=0 gives
-    t=exp(-i*delta*length). Optical carrier phase is not included.
-    No background loss, material mapping or imposed state is applied here.
+    t=exp(-(alpha/2+i*delta)*length). Optical carrier phase is not included.
+    No material mapping or imposed state is applied here.
     """
     from ..propagation.cascade import TwoPort
 
-    xp, _ = complex_arrays(detuning, coupling, length)
+    xp, _ = complex_arrays(detuning, coupling, length, attenuation)
     if not apc.is_numpy_namespace(xp):
         raise NotImplementedError('uniform_bragg_two_port currently supports NumPy only')
-    _, (delta, width) = real_arrays(detuning, length, xp=xp)
+    _, (delta, width, alpha) = real_arrays(detuning, length, attenuation, xp=xp)
     _, (kappa,) = complex_arrays(coupling, xp=xp)
     if width.ndim != 0 or not np.isfinite(width) or width < 0.:
         raise ValueError('length must be a finite nonnegative scalar')
+    if alpha.ndim != 0 or not np.isfinite(alpha) or alpha < 0.:
+        raise ValueError('attenuation must be a finite nonnegative scalar')
     if not np.all(np.isfinite(delta)) or not np.all(np.isfinite(kappa)):
         raise ValueError('detuning and coupling must be finite')
 
     with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
         d, k = np.broadcast_arrays(delta*width, kappa*width)
-        magnitude = np.abs(k)
-        squared = (magnitude-np.abs(d))*(magnitude+np.abs(d))
-        u = np.sqrt(np.abs(squared))
-        stop = squared >= 0.
-        c = np.array(np.cos(u))
-        s = np.array(np.sinc(u/np.pi))
-        numerator = np.ones_like(u)
+        if alpha != 0.:
+            d = d-.5j*alpha*width
+            u = np.sqrt(np.abs(k)**2-d*d)
+            # Principal square root has nonnegative real part.
+            decay = np.exp(-u)
+            c = .5*(1.+decay*decay)
+            s = np.ones_like(u)
+            np.divide(-np.expm1(-2.*u), 2.*u, out=s, where=u != 0.)
+            numerator = decay
+        else:
+            magnitude = np.abs(k)
+            squared = (magnitude-np.abs(d))*(magnitude+np.abs(d))
+            u = np.sqrt(np.abs(squared))
+            stop = squared >= 0.
+            c = np.array(np.cos(u))
+            s = np.array(np.sinc(u/np.pi))
+            numerator = np.ones_like(u)
 
-        # Divide out cosh in the stop band, avoiding overflow for strong gratings.
-        inside = u[stop]
-        ratio = np.ones_like(inside)
-        np.divide(np.tanh(inside), inside, out=ratio, where=inside != 0.)
-        c[stop], s[stop] = 1., ratio
-        decay = np.exp(-inside)
-        numerator[stop] = 2.*decay/(1.+decay*decay)
+            # Divide out cosh in the stop band, avoiding overflow for strong gratings.
+            inside = u[stop]
+            ratio = np.ones_like(inside)
+            np.divide(np.tanh(inside), inside, out=ratio, where=inside != 0.)
+            c[stop], s[stop] = 1., ratio
+            decay = np.exp(-inside)
+            numerator[stop] = 2.*decay/(1.+decay*decay)
 
         denominator = c+1j*d*s
         transmission = numerator/denominator
@@ -105,13 +118,14 @@ class BraggGrating:
     def _parameters(self):
         return self.bragg_wavelength, self.coupling
 
-    def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0.):
+    def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0., attenuation=0.):
         """NumPy optical fields at start/end, for absolute frequency [Hz].
 
         optics is the uniform reference GuideOptics. Strain [1] and T-T_ref
         [K] must be scalar and uniform over the interval. The Bragg material
         period stays fixed; carrier phase uses that unperturbed frame.
-        Input-to-start propagation and background loss are separate.
+        attenuation is uniform background power loss [1/m] over this interval.
+        Input-to-start propagation is separate.
         """
         from ..fiber import GuideOptics
         from ..propagation.cascade import TwoPort
@@ -120,7 +134,7 @@ class BraggGrating:
             raise TypeError('optics must be a GuideOptics')
         parameters = (frequency, *self._parameters(), optics.frequency_ref,
             optics.effective_index, optics.group_index, optics.gvd,
-            axial_strain, temperature_change, optics.strain_phase_factor,
+            axial_strain, temperature_change, attenuation, optics.strain_phase_factor,
             optics.strain_group_factor, optics.temperature_phase_factor, optics.temperature_group_factor)
         xp, arrays = complex_arrays(*parameters)
         if not apc.is_numpy_namespace(xp):
@@ -145,7 +159,7 @@ class BraggGrating:
             group_change = optics.relative_group_delay_change(strain, temperature, xp=xp)
             detuning = (detuning+optics.reference_propagation_constant*phase_change
                 +optics.propagation_constant_offset(frequency)*group_change)
-            envelope = uniform_bragg_two_port(detuning, self.coupling, self.length)
+            envelope = uniform_bragg_two_port(detuning, self.coupling, self.length, attenuation=attenuation)
             carrier = (np.exp(-1j*optics.reference_propagation_constant*self.length)
                 *np.exp(-1j*optics.propagation_constant_offset(bragg_frequency)*self.length))
             result = TwoPort(envelope.r_left, envelope.r_right*carrier**2,
