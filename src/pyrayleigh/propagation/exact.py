@@ -1,14 +1,17 @@
 """Scalar static NumPy reference, using point, Rayleigh and Bragg two-ports."""
 
+from dataclasses import replace
+
 import array_api_compat as apc
 import numpy as np
 
 from ..backends import complex_arrays
+from ..constants import SPEED_OF_LIGHT
 from ..fiber import Fiber, MultiCoreFiber
 from ..probe import Probe
 from ..scattering import PointReflector
 from ..state import FiberState, Field
-from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, star
+from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, _check_tolerance, star
 from .phase import optical_path
 
 
@@ -31,8 +34,41 @@ def _uniform_value(field, start, end):
     return values[0]
 
 
-def _static_blocks(fiber, probe, state, loss_convention):
+def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
+    fields = (state.axial_strain, state.temperature_change)
+    edges = sorted({grating.start, grating.end, *(float(knot)
+        for field in fields for term in field.terms for knot in term.profile.positions
+        if grating.start < knot < grating.end)})
+    loads = [tuple(_uniform_value(field, a, b) for field in fields)
+        for a, b in zip(edges[:-1], edges[1:])]
+    if all(load == loads[0] for load in loads):
+        return grating.two_port(frequency, optics,
+            axial_strain=loads[0][0], temperature_change=loads[0][1])
+    result = None
+    for left, right, (strain, temperature) in zip(edges[:-1], edges[1:], loads):
+        coupling = grating.coupling
+        offset = left-grating.start
+        if offset != 0.:
+            bragg_frequency = SPEED_OF_LIGHT/grating.bragg_wavelength
+            # Each piece uses its own left plane, on the same material grating.
+            phase = (np.exp(-2j*optics.reference_propagation_constant*offset)
+                *np.exp(-2j*optics.propagation_constant_offset(bragg_frequency)*offset))
+            coupling = coupling*phase
+        piece = replace(grating, start=left, length=right-left, coupling=coupling)
+        block = piece.two_port(frequency, optics, axial_strain=strain, temperature_change=temperature)
+        try:
+            result = block if result is None else star(result, block,
+                denominator_tolerance=denominator_tolerance)
+        except NumericalResonanceError as error:
+            raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
+                frequency=float(frequency[error.index]), position=left) from error
+    result.validate_passivity()
+    return result
+
+
+def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_TOLERANCE):
     """Validate the whole model, then visit propagation and local two-ports."""
+    _check_tolerance(denominator_tolerance)
     if not isinstance(loss_convention, str) or loss_convention != "background":
         raise ValueError("loss_convention must be 'background'")
     if isinstance(fiber, MultiCoreFiber):
@@ -101,16 +137,13 @@ def _static_blocks(fiber, probe, state, loss_convention):
             raise NotImplementedError('point elements inside Bragg intervals are not supported yet')
         if sample is not None and np.any((sample.positions > grating.start) & (sample.positions < grating.end)):
             raise NotImplementedError('Rayleigh scatterers inside Bragg intervals are not supported yet')
-        strain = _uniform_value(state.axial_strain, grating.start, grating.end)
-        temperature = _uniform_value(state.temperature_change, grating.start, grating.end)
         for name in ('curvature_x', 'curvature_y'):
             if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
                 raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
         if (fiber.index_perturbation is not None
                 and _uniform_value(fiber.index_perturbation, grating.start, grating.end) != 0.):
             raise NotImplementedError('static index perturbations inside Bragg intervals are not supported yet')
-        block = grating.two_port(frequency, section.optics,
-            axial_strain=strain, temperature_change=temperature)
+        block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -145,13 +178,14 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
-    Each Bragg interval needs one lossless section and uniform strain and
-    temperature. Curvature and static index changes are allowed outside it.
+    Each Bragg interval needs one lossless section. Strain and temperature
+    may be piecewise constant, split at their profile knots. Continuous
+    gradients are rejected. Curvature and static index changes stay outside.
     Point and Rayleigh scatterers may lie at the interval boundaries.
     """
     from ..response import Response
 
-    blocks = _static_blocks(fiber, probe, state, loss_convention)
+    blocks = _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance)
     frequency = np.asarray(probe.frequency)
     zero = np.zeros_like(frequency, dtype=np.complex128)
     one = np.ones_like(zero)

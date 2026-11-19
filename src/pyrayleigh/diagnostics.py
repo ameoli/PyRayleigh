@@ -68,7 +68,8 @@ def compute_response_diagnostics(fiber, probe, state=None, *, loss_convention,
     """
     total = exact_response(fiber, probe, state, loss_convention=loss_convention,
         denominator_tolerance=denominator_tolerance)
-    direct = direct_response_consistent(fiber, probe, state, loss_convention=loss_convention)
+    direct = direct_response_consistent(fiber, probe, state, loss_convention=loss_convention,
+        denominator_tolerance=denominator_tolerance)
     metadata = {"fiber_id": fiber.fiber_id, "loss_convention": loss_convention,
         "model": "scalar_static", "backend": "numpy", "dtype": "complex128",
         "boundary": "matched_right", "denominator_tolerance": float(denominator_tolerance),
