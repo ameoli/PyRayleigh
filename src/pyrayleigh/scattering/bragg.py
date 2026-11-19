@@ -1,9 +1,14 @@
-"""Uniform, lossless coupled-mode section in the Bragg envelope frame."""
+"""Uniform, lossless coupled-mode sections and their optical reference planes."""
+
+from dataclasses import dataclass
+import math
+from numbers import Real
 
 import array_api_compat as apc
 import numpy as np
 
 from ..backends import complex_arrays, real_arrays
+from ..constants import SPEED_OF_LIGHT
 
 
 def uniform_bragg_two_port(detuning, coupling, length):
@@ -53,3 +58,77 @@ def uniform_bragg_two_port(detuning, coupling, length):
             transmission, transmission)
     result.validate_passivity()
     return result
+
+
+@dataclass(frozen=True)
+class BraggGrating:
+    """Uniform grating on the material interval [start, start+length] [m].
+
+    bragg_wavelength [m] fixes beta_B through the supplied reference guide.
+    coupling [1/m] may be complex; its phase is referenced to start.
+    Optical parameters remain native scalars; values are checked by two_port.
+    Geometry is fixed. This object evaluates an unperturbed, lossless grating.
+    """
+
+    start: float
+    length: float
+    bragg_wavelength: object
+    coupling: object
+
+    def __post_init__(self):
+        for name in ('start', 'length'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise TypeError(f'{name} must be a fixed real number')
+            if not math.isfinite(value) or value < 0. or (name == 'length' and value == 0.):
+                raise ValueError('start must be nonnegative and length must be positive and finite')
+        if not math.isfinite(self.end) or self.end <= self.start:
+            raise ValueError('grating end must be finite and larger than start')
+        _, (wavelength,) = real_arrays(self.bragg_wavelength)
+        _, (coupling,) = complex_arrays(self.coupling)
+        if wavelength.ndim != 0 or coupling.ndim != 0:
+            raise ValueError('grating wavelength and coupling must be scalars')
+
+    @property
+    def end(self):
+        return float(self.start)+float(self.length)
+
+    def _parameters(self):
+        return self.bragg_wavelength, self.coupling
+
+    def two_port(self, frequency, optics):
+        """NumPy optical fields at start/end, for absolute frequency [Hz].
+
+        optics is one uniform GuideOptics. Input-to-start propagation is
+        separate. No state profile or distributed background loss is applied.
+        """
+        from ..fiber import GuideOptics
+        from ..propagation.cascade import TwoPort
+
+        if not isinstance(optics, GuideOptics):
+            raise TypeError('optics must be a GuideOptics')
+        parameters = (frequency, *self._parameters(), optics.frequency_ref,
+            optics.effective_index, optics.group_index, optics.gvd)
+        xp, arrays = complex_arrays(*parameters)
+        if not apc.is_numpy_namespace(xp):
+            raise NotImplementedError('BraggGrating.two_port currently supports NumPy only')
+        _, (frequency, wavelength) = real_arrays(frequency, self.bragg_wavelength, xp=xp)
+        if any(not np.all(np.isfinite(value)) for value in arrays):
+            raise ValueError('grating response parameters must be finite')
+        if np.any(frequency <= 0.) or wavelength <= 0.:
+            raise ValueError('frequency and Bragg wavelength must be positive')
+        if optics.frequency_ref <= 0. or optics.effective_index <= 0. or optics.group_index <= 0.:
+            raise ValueError('guide reference frequency and indices must be positive')
+
+        with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+            bragg_frequency = SPEED_OF_LIGHT/wavelength
+            delta_omega = 2*np.pi*(frequency-bragg_frequency)
+            detuning = (optics.group_delay_per_length(bragg_frequency)*delta_omega
+                + .5*optics.gvd*delta_omega**2)
+            envelope = uniform_bragg_two_port(detuning, self.coupling, self.length)
+            carrier = (np.exp(-1j*optics.reference_propagation_constant*self.length)
+                *np.exp(-1j*optics.propagation_constant_offset(bragg_frequency)*self.length))
+            result = TwoPort(envelope.r_left, envelope.r_right*carrier**2,
+                envelope.t_left_to_right*carrier, envelope.t_right_to_left*carrier)
+        result.validate_passivity()
+        return result
