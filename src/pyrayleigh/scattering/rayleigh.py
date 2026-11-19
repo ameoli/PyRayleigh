@@ -107,8 +107,8 @@ def rayleigh_coefficients_from_normals(normals, rate, cell_lengths, *, xp=None):
 
 
 def split_rayleigh_coefficients(coefficients, normals, rate, cell_lengths,
-                                 *, right_phase=0., xp=None):
-    """Conditionally split each parent into two equal-width child coefficients.
+                                 *, right_phase=0., left_fraction=.5, xp=None):
+    """Conditionally split each parent into two child coefficients.
 
     Return shape (N, 2), with left + exp(-i*right_phase)*right = parent.
     right_phase [rad] is the extra round-trip reference phase of the right
@@ -116,22 +116,28 @@ def split_rayleigh_coefficients(coefficients, normals, rate, cell_lengths,
     Only phase is compensated, without loss or intervening point elements.
     Normals have shape (N, 2), are independent N(0, 1) and independent of the
     parents. Parent prior variance must be rate*cell_lengths, not |parent|^2.
+    left_fraction gives the left child's share of this variance, in (0, 1).
+    Its default is an equal split.
     Only dtype/shape is checked; finite physical inputs and nonnegative rates
     are required. Derivatives in rate are intended for positive cell variance.
     """
-    xp, values = complex_arrays(coefficients, normals, rate, cell_lengths, right_phase, xp=xp)
+    xp, values = complex_arrays(coefficients, normals, rate, cell_lengths,
+                                right_phase, left_fraction, xp=xp)
     parent = values[0]
     if parent.ndim != 1:
         raise ValueError("coefficients must be a one-dimensional array")
-    _, (phase,) = real_arrays(right_phase, xp=xp)
+    _, (phase, fraction) = real_arrays(right_phase, left_fraction, xp=xp)
     if phase.shape not in ((), parent.shape):
         raise ValueError("right_phase must be scalar or have one value per parent")
-    noise = .5*rayleigh_coefficients_from_normals(normals, rate, cell_lengths, xp=xp)
+    if fraction.shape not in ((), parent.shape):
+        raise ValueError("left_fraction must be scalar or have one value per parent")
+    noise = xp.sqrt(fraction*(1.-fraction))*rayleigh_coefficients_from_normals(
+        normals, rate, cell_lengths, xp=xp)
     if noise.shape != parent.shape:
         raise ValueError("normals must have one pair per parent coefficient")
     i = xp.asarray(1j, dtype=xp.complex128)
-    left = .5*parent + noise
-    right = (.5*parent-noise)*xp.exp(i*xp.astype(phase, xp.complex128))
+    left = fraction*parent + noise
+    right = ((1.-fraction)*parent-noise)*xp.exp(i*xp.astype(phase, xp.complex128))
     return xp.stack((left, right), axis=-1)
 
 

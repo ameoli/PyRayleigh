@@ -18,3 +18,4 @@ from .scattering import (CrosstalkRealization, PointReflector, RayleighRealizati
 from .response import MultiCoreResponse, Response, compute_response
 from .diagnostics import DiagnosticResponse, compute_response_diagnostics
 from .sampling import rayleigh_resolution_report
+from .refinement import refine_rayleigh_from_normals
