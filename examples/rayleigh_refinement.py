@@ -13,16 +13,18 @@ from pyrayleigh import (Fiber, FiberState, Field, FieldTerm, GuideOptics, Probe,
 from pyrayleigh.constants import SPEED_OF_LIGHT
 
 
-def coupled_grids():
+def coupled_grids(*, seed=123, refinement_seed=124, levels=6):
+    if levels < 2:
+        raise ValueError('at least two grid levels are required')
     frequency = SPEED_OF_LIGHT/1550e-9
     length = .08
     guide = GuideOptics(frequency, 1.47, 1.47)
     fiber = Fiber('coupled', length, 293.15, frequency-5e9, frequency+5e9,
         (Section(0., length, guide, 0., .1),))
-    fiber = fiber.with_rayleigh(123, cell_length=.01)
+    fiber = fiber.with_rayleigh(seed, cell_length=.01)
     fibers = [fiber]
-    rng = np.random.Generator(np.random.PCG64(124))
-    for _ in range(5):
+    rng = np.random.Generator(np.random.PCG64(refinement_seed))
+    for _ in range(levels-1):
         parent = fibers[-1]
         normals = rng.standard_normal((parent.rayleigh.cell_count, 2))
         sample = refine_rayleigh_from_normals(parent, normals,
@@ -38,8 +40,8 @@ def relative_error(value, reference):
     return float(np.linalg.norm(value-reference)/scale)
 
 
-def run():
-    fibers = coupled_grids()
+def run(*, seed=123, refinement_seed=124, levels=6):
+    fibers = coupled_grids(seed=seed, refinement_seed=refinement_seed, levels=levels)
     probe = Probe(np.linspace(fibers[0].frequency_min, fibers[0].frequency_max, 129))
     strain = SpatialProfile([.027, .028, .039, .040], [0., 1e-5, 1e-5, 0.])
     state = FiberState(axial_strain=Field((FieldTerm(strain),)))
