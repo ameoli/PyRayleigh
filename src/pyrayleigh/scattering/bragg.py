@@ -14,8 +14,8 @@ from ..constants import SPEED_OF_LIGHT
 def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
     """NumPy CMT solution, with detuning and complex coupling in 1/m.
 
-    length [m] and attenuation [1/m] are finite nonnegative scalars.
-    Detuning and coupling broadcast. Attenuation is background power loss.
+    length [m] is a finite nonnegative scalar. Detuning, coupling and
+    background power attenuation [1/m] broadcast. Attenuation is nonnegative.
     delta=beta-beta_B; the grating phase is carried by kappa.
     A'=-(alpha/2+i*delta)*A-i*kappa*B and
     B'=i*conj(kappa)*A+(alpha/2+i*delta)*B, with A travelling right and B left.
@@ -32,15 +32,15 @@ def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
     _, (kappa,) = complex_arrays(coupling, xp=xp)
     if width.ndim != 0 or not np.isfinite(width) or width < 0.:
         raise ValueError('length must be a finite nonnegative scalar')
-    if alpha.ndim != 0 or not np.isfinite(alpha) or alpha < 0.:
-        raise ValueError('attenuation must be a finite nonnegative scalar')
+    if not np.all(np.isfinite(alpha)) or np.any(alpha < 0.):
+        raise ValueError('attenuation must be finite and nonnegative')
     if not np.all(np.isfinite(delta)) or not np.all(np.isfinite(kappa)):
         raise ValueError('detuning and coupling must be finite')
 
     with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
-        d, k = np.broadcast_arrays(delta*width, kappa*width)
-        if alpha != 0.:
-            d = d-.5j*alpha*width
+        d, k, loss = np.broadcast_arrays(delta*width, kappa*width, .5j*alpha*width)
+        if np.any(alpha != 0.):
+            d = d-loss
             u = np.sqrt(np.abs(k)**2-d*d)
             # Principal square root has nonnegative real part.
             decay = np.exp(-u)
@@ -126,7 +126,8 @@ class BraggGrating:
         optics is the uniform reference GuideOptics. Strain [1] and T-T_ref
         [K] and index_change [1] must be uniform scalars. The Bragg material
         period stays fixed; carrier phase uses that unperturbed frame.
-        attenuation is uniform background power loss [1/m] over this interval.
+        attenuation is spatially uniform background power loss [1/m],
+        broadcast with frequency. It may include tabulated bend loss.
         Index changes follow OpticalPath, without extra interface scattering.
         Input-to-start propagation is separate.
         """

@@ -189,8 +189,12 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             if item.start <= grating.start and grating.end <= item.end), None)
         if section is None:
             raise NotImplementedError('a Bragg interval must lie within one section')
-        if section.optics.bend_loss is not None:
-            raise NotImplementedError('bend loss inside Bragg intervals is not supported yet')
+        attenuation = section.attenuation
+        table = section.optics.bend_loss
+        if table is not None:
+            x, y = (_uniform_value(getattr(state, name), grating.start, grating.end)
+                for name in ('curvature_x', 'curvature_y'))
+            attenuation = attenuation+table.value(np.hypot(x, y), frequency, xp=xp)
         scatterers = []
         inside = sorted((node for node in nodes if node[2] in (0, 1)
             and grating.start < node[0] < grating.end), key=lambda node: (node[0], node[2]))
@@ -204,11 +208,8 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
         if inside:
             nodes = [node for node in nodes
                 if not (node[2] in (0, 1) and grating.start < node[0] < grating.end)]
-        for name in ('curvature_x', 'curvature_y'):
-            if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
-                raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
         block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance,
-            scatterers=scatterers, attenuation=section.attenuation, index_perturbation=fiber.index_perturbation)
+            scatterers=scatterers, attenuation=attenuation, index_perturbation=fiber.index_perturbation)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -247,7 +248,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Strain, temperature and static index changes are split at profile knots.
     Each piece must be uniform unless segment_length is set.
     An explicit segment_length enables midpoint approximation of continuous
-    gradients; compare refined meshes. Curvature stays outside.
+    gradients; compare refined meshes. Curvature only contributes through
+    optics.bend_loss; its components must be uniform inside each grating.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
     """
