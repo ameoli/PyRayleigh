@@ -11,7 +11,7 @@ from ..constants import SPEED_OF_LIGHT
 from ..fiber import Fiber, MultiCoreFiber
 from ..probe import Probe
 from ..scattering import PointReflector
-from ..state import FiberState, Field
+from ..state import FiberState, Field, FieldTerm
 from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, _check_tolerance, star
 from .phase import optical_path
 
@@ -57,9 +57,11 @@ def _uniform_value(field, start, end):
     return values[0]
 
 
-def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=(), attenuation=0.):
+def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=(),
+                 attenuation=0., index_perturbation=None):
     """A whole grating, with ordered local scatterers inside."""
-    fields = (state.axial_strain, state.temperature_change)
+    index = Field() if index_perturbation is None else Field((FieldTerm(index_perturbation),))
+    fields = (state.axial_strain, state.temperature_change, index)
     positions = {position for position, _ in scatterers}
     edges = sorted({grating.start, grating.end, *positions, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
@@ -89,10 +91,11 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
         edges, loads = merged_edges, merged_loads
     if not scatterers and all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
-            axial_strain=loads[0][0], temperature_change=loads[0][1], attenuation=attenuation)
+            axial_strain=loads[0][0], temperature_change=loads[0][1],
+            attenuation=attenuation, index_change=loads[0][2])
     result = None
     scatterer_index = 0
-    for left, right, (strain, temperature) in zip(edges[:-1], edges[1:], loads):
+    for left, right, (strain, temperature, index_change) in zip(edges[:-1], edges[1:], loads):
         coupling = grating.coupling
         offset = left-grating.start
         if offset != 0.:
@@ -103,7 +106,7 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
             coupling = coupling*phase
         piece = replace(grating, start=left, length=right-left, coupling=coupling)
         block = piece.two_port(frequency, optics, axial_strain=strain,
-            temperature_change=temperature, attenuation=attenuation)
+            temperature_change=temperature, attenuation=attenuation, index_change=index_change)
         position = left
         try:
             result = block if result is None else star(result, block,
@@ -204,11 +207,8 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
         for name in ('curvature_x', 'curvature_y'):
             if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
                 raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
-        if (fiber.index_perturbation is not None
-                and _uniform_value(fiber.index_perturbation, grating.start, grating.end) != 0.):
-            raise NotImplementedError('static index perturbations inside Bragg intervals are not supported yet')
         block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance,
-            scatterers=scatterers, attenuation=section.attenuation)
+            scatterers=scatterers, attenuation=section.attenuation, index_perturbation=fiber.index_perturbation)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -244,9 +244,10 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
     Each Bragg interval needs one section, with its background attenuation.
-    Strain and temperature may be piecewise constant, split at profile knots.
+    Strain, temperature and static index changes are split at profile knots.
+    Each piece must be uniform unless segment_length is set.
     An explicit segment_length enables midpoint approximation of continuous
-    gradients; compare refined meshes. Curvature and static index changes stay outside.
+    gradients; compare refined meshes. Curvature stays outside.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
     """

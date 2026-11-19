@@ -100,11 +100,12 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     an explicitly supplied max_order. denominator_tolerance is optional and
     forwarded to exact_response. These options are exclusive to exact.
     It does not support time-varying states, multicore fibers or WeakFBG.
-    Intervals in fiber.gratings accept piecewise constant strain and temperature,
-    splitting at profile knots. Set grating.segment_length [m] to approximate
-    continuous gradients with constant midpoint loads, and compare finer meshes.
+    Intervals in fiber.gratings accept piecewise constant strain, temperature
+    and fiber.index_perturbation, splitting at profile knots.
+    Set grating.segment_length [m] to approximate continuous gradients with
+    constant midpoint loads, and compare finer meshes.
     Each needs one section, whose background attenuation also applies inside
-    the grating. Internal curvature and static index changes are unsupported.
+    the grating. Internal curvature is unsupported.
     PointReflector and stored Rayleigh samples may lie inside gratings,
     using their supplied local coefficients. Outside profiles use the normal
     path model.
