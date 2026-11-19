@@ -61,7 +61,9 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
                  attenuation=0., index_perturbation=None):
     """A whole grating, with ordered local scatterers inside."""
     index = Field() if index_perturbation is None else Field((FieldTerm(index_perturbation),))
-    fields = (state.axial_strain, state.temperature_change, index)
+    table = optics.bend_loss
+    bending = () if table is None else (state.curvature_x, state.curvature_y)
+    fields = (state.axial_strain, state.temperature_change, index)+bending
     positions = {position for position, _ in scatterers}
     edges = sorted({grating.start, grating.end, *positions, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
@@ -70,6 +72,9 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
         loads = [tuple(_uniform_value(field, a, b) for field in fields)
             for a, b in zip(edges[:-1], edges[1:])]
     else:
+        for left, right in zip(edges[:-1], edges[1:]):
+            for component in bending:
+                _uniform_value(component, left, right)
         refined = []
         for left, right in zip(edges[:-1], edges[1:]):
             count = max(1, math.ceil((right-left)/grating.segment_length))
@@ -89,13 +94,17 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
                 merged_edges.append(right)
                 merged_loads.append(load)
         edges, loads = merged_edges, merged_loads
+    losses = [attenuation]*len(loads)
+    if table is not None:
+        losses = [attenuation+table.value(np.hypot(*load[3:]), frequency) for load in loads]
     if not scatterers and all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
             axial_strain=loads[0][0], temperature_change=loads[0][1],
-            attenuation=attenuation, index_change=loads[0][2])
+            attenuation=losses[0], index_change=loads[0][2])
     result = None
     scatterer_index = 0
-    for left, right, (strain, temperature, index_change) in zip(edges[:-1], edges[1:], loads):
+    for left, right, load, loss in zip(edges[:-1], edges[1:], loads, losses):
+        strain, temperature, index_change = load[:3]
         coupling = grating.coupling
         offset = left-grating.start
         if offset != 0.:
@@ -106,7 +115,7 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
             coupling = coupling*phase
         piece = replace(grating, start=left, length=right-left, coupling=coupling)
         block = piece.two_port(frequency, optics, axial_strain=strain,
-            temperature_change=temperature, attenuation=attenuation, index_change=index_change)
+            temperature_change=temperature, attenuation=loss, index_change=index_change)
         position = left
         try:
             result = block if result is None else star(result, block,
@@ -189,12 +198,6 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             if item.start <= grating.start and grating.end <= item.end), None)
         if section is None:
             raise NotImplementedError('a Bragg interval must lie within one section')
-        attenuation = section.attenuation
-        table = section.optics.bend_loss
-        if table is not None:
-            x, y = (_uniform_value(getattr(state, name), grating.start, grating.end)
-                for name in ('curvature_x', 'curvature_y'))
-            attenuation = attenuation+table.value(np.hypot(x, y), frequency, xp=xp)
         scatterers = []
         inside = sorted((node for node in nodes if node[2] in (0, 1)
             and grating.start < node[0] < grating.end), key=lambda node: (node[0], node[2]))
@@ -209,7 +212,7 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             nodes = [node for node in nodes
                 if not (node[2] in (0, 1) and grating.start < node[0] < grating.end)]
         block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance,
-            scatterers=scatterers, attenuation=attenuation, index_perturbation=fiber.index_perturbation)
+            scatterers=scatterers, attenuation=section.attenuation, index_perturbation=fiber.index_perturbation)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -249,7 +252,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Each piece must be uniform unless segment_length is set.
     An explicit segment_length enables midpoint approximation of continuous
     gradients; compare refined meshes. Curvature only contributes through
-    optics.bend_loss; its components must be uniform inside each grating.
+    optics.bend_loss; its components may be piecewise constant, split at their
+    profile knots. Continuous curvature gradients are not supported yet.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
     """

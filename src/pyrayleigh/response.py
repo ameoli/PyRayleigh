@@ -105,9 +105,10 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     Set grating.segment_length [m] to approximate continuous gradients with
     constant midpoint loads, and compare finer meshes.
     Each needs one section, whose background attenuation also applies inside
-    the grating. With a bend_loss table, curvature components must be uniform
-    inside each grating, even when segment_length is set. Without a table,
-    curvature contributes no optical loss, as in OpticalPath.
+    the grating. With a bend_loss table, piecewise constant curvature is split
+    at profile knots. Continuous curvature gradients are unsupported, even
+    with segment_length. Without a table, curvature adds no optical loss,
+    as in OpticalPath.
     PointReflector and stored Rayleigh samples may lie inside gratings,
     using their supplied local coefficients. Outside profiles use the normal
     path model.
