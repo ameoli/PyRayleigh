@@ -21,13 +21,20 @@ def _check_tolerance(value):
 class NumericalResonanceError(FloatingPointError):
     """A cascade denominator is below the requested numerical cutoff."""
 
-    def __init__(self, index, denominator, tolerance):
+    def __init__(self, index, denominator, tolerance, *, frequency=None, position=None):
         self.index = index
         self.denominator = complex(denominator)
         self.magnitude = abs(self.denominator)
         self.tolerance = float(tolerance)
-        super().__init__(f"star denominator at index {index} has magnitude "
-                         f"{self.magnitude:.6g} <= {self.tolerance:.6g}")
+        self.frequency = frequency
+        self.position = position
+        message = (f"star denominator at index {index} has magnitude "
+                   f"{self.magnitude:.6g} <= {self.tolerance:.6g}")
+        if frequency is not None:
+            message += f" at {frequency:.12g} Hz"
+        if position is not None:
+            message += f", material position {position:.12g} m"
+        super().__init__(message)
 
 
 @dataclass(frozen=True, eq=False)

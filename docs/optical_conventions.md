@@ -1,9 +1,8 @@
 # Optical conventions and loss budget
 
-This is the design contract for a future exact solver. The current
+The NumPy reference is available as `exact_response`. The existing
 `compute_response(..., max_order=...)` API and its numerical behavior stay
-unchanged. The exact method and loss declaration described here are not
-implemented yet.
+unchanged. An exact selector in that dispatcher has not been added yet.
 
 ## Scope
 
@@ -15,6 +14,16 @@ the prescribed material model or the time evolution exact.
 PyRayleigh returns complex optical fields. Laser noise, interferometers,
 ADC samples, FFT distance axes and strain estimation belong to the interrogator.
 The fiber realization is supplied once and reused when its state changes.
+
+```python
+from pyrayleigh.propagation.exact import exact_response
+
+result = exact_response(fiber, probe, state, loss_convention="background")
+```
+
+`probe` is a `Probe` and `state` can be omitted for the reference state.
+The result is the existing `Response`, with the probe's frequency shape.
+This reference rejects non-NumPy parameters rather than converting them.
 
 ## Fields and ports
 
@@ -95,7 +104,7 @@ Three quantities have different meanings:
 | `rho_guided_backscatter` | Rate used to generate the explicit backward guided scatterers | 1/m |
 | `alpha_background` | Residual distributed loss not represented by those scatterers | 1/m |
 
-The future exact solver uses `alpha_background` for distributed propagation.
+The exact solver uses `alpha_background` for distributed propagation.
 It includes absorption and unmodelled radiation or bend loss. It excludes the
 guided backscattering represented explicitly by the Rayleigh matrices.
 Discrete connector loss is already in the point matrix and must not be added
@@ -106,10 +115,10 @@ Today `Section.attenuation` is the power coefficient used by `OpticalPath`.
 The API does not record whether it came from total measured loss or a residual
 background. Its stored value and legacy interpretation remain unchanged.
 
-An exact calculation must require an explicit declaration that the supplied
-section coefficients represent background loss. Ambiguous input is an error.
-The declaration's API will be added with the exact dispatcher; this step adds
-no new argument or default to `Section` or `compute_response`.
+An exact calculation requires `loss_convention="background"` to declare that
+the supplied section coefficients represent background loss. Omitting it or
+using another value is an error. This adds no argument or default to `Section`
+or `compute_response` and does not perform a loss calibration for the caller.
 
 Do not automatically subtract `rho` from an attenuation coefficient. A mapping
 such as `alpha_background ~= alpha_total_measured - rho_guided_backscatter`
@@ -126,7 +135,8 @@ Refining the Rayleigh grid does not recalibrate the background loss.
 Order events by material position. At a coincident point and Rayleigh sample,
 compose the `PointReflector` first and the Rayleigh sample second. This agrees
 with the current direct Rayleigh response crossing points at or before its
-position. A section boundary introduces no extra reflection; propagation
+position. Coincident Rayleigh samples retain their stored order.
+A section boundary introduces no extra reflection; propagation
 integrates the sections on each side. A zero-length interval is transparent.
 
 `FiberState.axial_strain` is total axial strain, including thermal expansion;
@@ -170,6 +180,24 @@ require diagnostics and a conditioning check; exactly degenerate cases need
 explicit treatment or a reported failure. Test opaque elements to ensure
 downstream components cannot contribute through a blocked port.
 
+The reference composes `TwoPort` blocks with the scalar `star` product. It
+checks finite inputs, nonnegative background losses and rates, full point
+passivity, and the Rayleigh coefficient domain before composing the fiber.
+`denominator_tolerance` defaults to `64*eps(float64)`. A denominator at or below
+the cutoff raises `NumericalResonanceError`, with sample index, frequency,
+material position and the failed denominator. It is a refusal cutoff, not an
+accuracy bound for high-Q cavities. No epsilon is added to a denominator.
+
+If the complete prefix has zero left-to-right transmission at every sample,
+the solver returns its left reflection and zero transmission. A disconnected
+closed cavity downstream then needs no evaluation. Otherwise a singular
+composition is reported. An opaque component is not a source of NaNs.
+
+Frequency samples are evaluated together and nodes are visited in spatial
+order. Wave arrays take O(M) memory for M probe samples; node metadata takes
+O(N). Profile integration still uses the existing `OpticalPath` routines.
+This is a reference implementation, without a performance optimization pass.
+
 Start with a NumPy reference. Keep the Array API design and add JAX parity
 after the reference is verified. Physical checks must not convert JAX tracers
 to NumPy or Python booleans; later traced execution needs separate validation
@@ -177,10 +205,10 @@ or numerical status reporting.
 
 ## First validation example
 
-Plan a runnable `examples/fabry_perot.ipynb` with an independent analytic
-two-mirror solution. For the uniform reference, calculate propagation directly
-from lengths, index and loss rather than calling the cascade or `OpticalPath`.
-Compare complex reflection and transmission, energy residuals, weak and strong
-reflectors, and local-strain crossing counts. Record parameters, frequency
-grid, precision, backend and tolerances. The notebook is a scientific example;
+`examples/fabry_perot.ipynb` compares with an independent analytic two-mirror
+solution. For the uniform reference it calculates propagation directly from
+lengths, index and loss, without calling the cascade or `OpticalPath`.
+It compares complex reflection and transmission, energy residuals, weak and
+strong reflectors, and local-strain crossing counts. Parameters, frequency
+grid, precision, backend and tolerances are recorded. This is a scientific example;
 matching legacy ADC traces alone does not validate the exact optical model.
