@@ -12,29 +12,21 @@ from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, star
 from .phase import optical_path
 
 
-def exact_response(fiber, probe, state=None, *, loss_convention,
-                   denominator_tolerance=_TOLERANCE):
-    """Left reflection and transmission, with all orders of discrete scattering.
-
-    Section attenuation must be declared as background loss. Only stored
-    Rayleigh samples are used; no random draws or grid changes are made.
-    A single Fiber, static state and NumPy parameters are supported.
-    """
-    from ..response import Response
-
+def _static_blocks(fiber, probe, state, loss_convention):
+    """Validate the whole model, then visit propagation and local two-ports."""
     if not isinstance(loss_convention, str) or loss_convention != "background":
-        raise ValueError("exact_response requires loss_convention='background'")
+        raise ValueError("loss_convention must be 'background'")
     if isinstance(fiber, MultiCoreFiber):
-        raise NotImplementedError("exact_response currently supports one scalar core")
+        raise NotImplementedError("static two-port responses currently support one scalar core")
     if not isinstance(fiber, Fiber) or not isinstance(probe, Probe):
-        raise TypeError("exact_response requires a Fiber and a Probe")
+        raise TypeError("a Fiber and a Probe are required")
     state =  FiberState() if state is None else state
     if not isinstance(state, FiberState):
         raise TypeError("state must be a FiberState")
     if not state.is_static:
-        raise NotImplementedError("exact_response requires a static or frozen state")
+        raise NotImplementedError("two-port responses require a static or frozen state")
     if any(not isinstance(point, PointReflector) for point in fiber.elements):
-        raise NotImplementedError("exact_response currently supports PointReflector elements only")
+        raise NotImplementedError("two-port responses currently support PointReflector elements only")
 
     path = optical_path(fiber, state)
     parameters = path._parameters(probe.frequency, extra=path.loss._parameters())
@@ -48,9 +40,9 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
         parameters.append(fiber.rayleigh.coefficients)
     xp, arrays = complex_arrays(*parameters)
     if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError("exact_response currently supports NumPy only")
+        raise NotImplementedError("static two-port responses currently support NumPy only")
     if any(not np.all(np.isfinite(value)) for value in arrays):
-        raise ValueError("exact_response parameters must be finite")
+        raise ValueError("response parameters must be finite")
     frequency = np.asarray(probe.frequency)
     if np.any(frequency <= 0.) or np.any(frequency < fiber.frequency_min) or np.any(frequency > fiber.frequency_max):
         raise ValueError("probe frequencies must be positive and inside the fiber band")
@@ -79,39 +71,52 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
             nodes.append((float(position), 1, index))
     nodes.sort(key=lambda item: (item[0], item[1]))
 
-    def compose(left, right, position):
-        try:
-            return star(left, right, denominator_tolerance=denominator_tolerance)
-        except NumericalResonanceError as error:
-            raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
-                frequency=float(frequency[error.index]), position=position) from error
-
-    zero = np.zeros_like(frequency, dtype=np.complex128)
-    one = np.ones_like(zero)
-    result = TwoPort(zero, zero, one, one)
-    previous = 0.
-    blocked = False
-    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+    def blocks():
+        previous = 0.
         for position, kind, value in nodes:
             if position > previous:
                 p = path.transmission(previous, position, frequency, xp=xp)
                 propagation = TwoPort(0., 0., p, p)
                 propagation.validate_passivity()
-                result = compose(result, propagation, position)
+                yield position, propagation
             if kind == 0:
                 block = value
             else:
                 r = sample.coefficients[value]
                 t = transmission[value]
                 block = TwoPort(r, -np.conj(r), t, t)
-            result = compose(result, block, position)
+            yield position, block
             previous = position
+        p = path.transmission(previous, fiber.length, frequency, xp=xp)
+        propagation = TwoPort(0., 0., p, p)
+        propagation.validate_passivity()
+        yield fiber.length, propagation
+
+    return blocks()
+
+
+def exact_response(fiber, probe, state=None, *, loss_convention,
+                   denominator_tolerance=_TOLERANCE):
+    """Left reflection and transmission, with all orders of discrete scattering.
+
+    Section attenuation must be declared as background loss. Only stored
+    Rayleigh samples are used; no random draws or grid changes are made.
+    A single Fiber, static state and NumPy parameters are supported.
+    """
+    from ..response import Response
+
+    blocks = _static_blocks(fiber, probe, state, loss_convention)
+    frequency = np.asarray(probe.frequency)
+    zero = np.zeros_like(frequency, dtype=np.complex128)
+    one = np.ones_like(zero)
+    result = TwoPort(zero, zero, one, one)
+    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+        for position, block in blocks:
+            try:
+                result = star(result, block, denominator_tolerance=denominator_tolerance)
+            except NumericalResonanceError as error:
+                raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
+                    frequency=float(frequency[error.index]), position=position) from error
             if np.all(result.t_left_to_right == 0.):
-                blocked = True
                 break
-        if not blocked:
-            p = path.transmission(previous, fiber.length, frequency, xp=xp)
-            propagation = TwoPort(0., 0., p, p)
-            propagation.validate_passivity()
-            result = compose(result, propagation, fiber.length)
     return Response(probe, reflection=result.r_left, transmission=result.t_left_to_right)

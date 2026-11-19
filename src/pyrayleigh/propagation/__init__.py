@@ -3,3 +3,4 @@ from .born import point_response, rayleigh_response
 from .paths import point_reflection_paths, reflection_paths_from_positions
 from .multiple import (multiple_point_response, point_path_amplitude,
                         reciprocal_transmission_factors)
+from .direct import direct_response_consistent

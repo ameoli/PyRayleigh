@@ -172,12 +172,51 @@ order, including `max_order=1`, is an error for `method="exact"`. With the
 truncated method an omitted order still means 1; explicit orders must remain
 integers 1, 2 or 3. `Response` keeps its current fields, shapes and units.
 Unknown methods are rejected. There is no `method="born"` alias for the
-truncated model: a direct model consistent with exact depletion is still needed.
+truncated model. Use `direct_response_consistent` for the single-reflection
+comparison with the exact model's local transmissions.
 
 To isolate multipath, compare exact and a direct-consistent calculation using
 the same local matrices, transmissions, background loss and realization.
 The latter retains one reflection event per path. Comparing exact with the
 legacy method also includes their different treatment of Rayleigh depletion.
+
+### Direct response with the same local transmissions
+
+```python
+from pyrayleigh import direct_response_consistent
+
+direct = direct_response_consistent(fiber, probe, state,
+                                     loss_convention="background")
+residual = result.reflection - direct.reflection
+```
+
+Here `result` is the exact `Response` computed above. The direct function
+also returns a `Response`: reflection includes exactly one reflection event,
+and transmission includes no reflections. It has the same static, scalar,
+NumPy-only scope and requires the same background-loss declaration.
+
+For ordered local scatterers, with reciprocal distributed factor `P(0,s)`,
+
+```text
+H_direct = sum_j r_L,j * P(0,s_j)^2 * product_(k<j)(t_LR,k * t_RL,k)
+T_direct = P(0,L) * product_j t_LR,j
+```
+
+Each return crosses all earlier blocks in both directions, using their own
+directional transmissions. It does not cross its own transmission. The
+point/cell tie order is the same as for exact. Stored Rayleigh coefficients
+are reused, with `sqrt(1-abs(r_j)**2)` at every crossing, without new draws.
+
+Both calculations use the same internal block builder and `OpticalPath`.
+The direct calculation visits the nodes once; it does not enumerate paths
+or introduce a denominator cutoff. Wave memory is O(M), plus O(N) node data.
+It is run only when requested, without extra fields in an exact-only call.
+
+This is a path truncation for a diagnostic comparison. With strong coherent
+returns it can give `abs(H_direct)**2 + abs(T_direct)**2 > 1`: the omitted
+paths also contribute interference. Do not normalize or clip that result, or
+interpret it as a separate complete passive fiber. Exact passivity is checked
+on the full response. This decomposition depends on the chosen local blocks.
 
 Subtract complex fields: `H_residual = H_exact - H_direct`. Power includes the
 interference term `2*real(H_direct*conj(H_residual))`; it is not additive across
@@ -250,12 +289,15 @@ not completion of every validation or convergence task in the roadmap.
 | T2 | Independent two-mirror complex fields, weak/strong reflectors and loss | Fabry-Perot notebook |
 | T3 | Static local strain and 2/4/0 crossings of the first repeated point path | Fabry-Perot notebook |
 | T4 | Full-matrix passivity, unitarity and reciprocity; mixed point/Rayleigh matrices against interface equations | Notebook and local NumPy checks |
-| T5 | Weak-limit scaling of one fixed Rayleigh sample, without new draws | Local NumPy checks |
+| T5 | Weak-limit scaling of a fixed Rayleigh sample; fixed-transmission single-reflection limit | Local NumPy checks |
 | T6 | Frequency-grid resolution, near-resonance diagnostics and point paths with apparent position beyond L | Notebook and local NumPy checks |
 
 The T5 comparison with the truncated response includes its missing Rayleigh
-depletion. A direct-consistent calculation is still needed to isolate multiple
-scattering. Coupled spatial refinement, Rayleigh statistics and exact JAX
+depletion. Use the direct-consistent response to isolate multiple scattering
+with the same local transmissions. Local checks compare its path sum with
+independent single-bounce formulas and the two-mirror residual with the
+analytic ghost series, including apparent positions beyond L.
+Coupled spatial refinement, Rayleigh statistics and exact JAX
 parity remain separate validation work. Reversal checks on mixed networks
 avoid coincident point/cell nodes: reversing those would also reverse their
 local composition order, which the current fixed tie convention does not allow.
