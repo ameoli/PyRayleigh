@@ -106,6 +106,35 @@ def rayleigh_coefficients_from_normals(normals, rate, cell_lengths, *, xp=None):
                         + i*xp.astype(normals[:, 1], xp.complex128))
 
 
+def split_rayleigh_coefficients(coefficients, normals, rate, cell_lengths,
+                                 *, right_phase=0., xp=None):
+    """Conditionally split each parent into two equal-width child coefficients.
+
+    Return shape (N, 2), with left + exp(-i*right_phase)*right = parent.
+    right_phase [rad] is the extra round-trip reference phase of the right
+    child. Zero phase preserves the raw sum, not the optical field in general.
+    Only phase is compensated, without loss or intervening point elements.
+    Normals have shape (N, 2), are independent N(0, 1) and independent of the
+    parents. Parent prior variance must be rate*cell_lengths, not |parent|^2.
+    Only dtype/shape is checked; finite physical inputs and nonnegative rates
+    are required. Derivatives in rate are intended for positive cell variance.
+    """
+    xp, values = complex_arrays(coefficients, normals, rate, cell_lengths, right_phase, xp=xp)
+    parent = values[0]
+    if parent.ndim != 1:
+        raise ValueError("coefficients must be a one-dimensional array")
+    _, (phase,) = real_arrays(right_phase, xp=xp)
+    if phase.shape not in ((), parent.shape):
+        raise ValueError("right_phase must be scalar or have one value per parent")
+    noise = .5*rayleigh_coefficients_from_normals(normals, rate, cell_lengths, xp=xp)
+    if noise.shape != parent.shape:
+        raise ValueError("normals must have one pair per parent coefficient")
+    i = xp.asarray(1j, dtype=xp.complex128)
+    left = .5*parent + noise
+    right = (.5*parent-noise)*xp.exp(i*xp.astype(phase, xp.complex128))
+    return xp.stack((left, right), axis=-1)
+
+
 def _sample_rayleigh(fiber, edges, normals, *, xp):
     xp, arrays = real_arrays(normals, *(section.rayleigh_coefficient
                                       for section in fiber.sections), xp=xp)

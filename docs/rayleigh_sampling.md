@@ -120,3 +120,71 @@ depletion. This example does not establish convergence for strong backscatter,
 cavities, heterogeneous or perturbed fibers, and it does not implement coupled
 refinement. It adds a runnable example, with local audit scripts kept outside
 the repository test suite.
+
+## Conditional coefficient split
+
+`split_rayleigh_coefficients` is a deterministic primitive for splitting each
+parent coefficient into two equal-width children. It accepts supplied normals
+and returns an (N, 2) array in the selected Array API backend, including JAX.
+It does not create a new spatial grid or draw random numbers.
+
+```python
+from pyrayleigh import split_rayleigh_coefficients
+
+children = split_rayleigh_coefficients(
+    parent_coefficients, normals, rate, parent_cell_lengths,
+    right_phase=reference_phase_difference,
+)
+```
+
+`normals` contains one independent standard-normal real/imaginary pair per
+parent and must be independent of the parent draws. `rate` is the parent's
+guided-backscatter rate in 1/m, and lengths are in m. Scalars or one value per
+parent are accepted for rate, length and phase. Let V=rate*length, and define
+
+```text
+eta = sqrt(V/8) * (X + i*Y)
+r_left  = r_parent/2 + eta
+r_right = (r_parent/2 - eta) * exp(+i*theta)
+```
+
+For fixed model parameters and circular complex Gaussian parents with
+variance V, the children have variance V/2 and are independent in the
+unconditional ensemble. Conditional on a fixed parent,
+their phase-aligned fluctuations are anticorrelated. Do not estimate V from
+the power of one parent draw. Use the known prior rate and cell width.
+
+### Optical phase convention
+
+The invariant is `r_left + exp(-i*theta)*r_right = r_parent`. For a parent at
+the left cell edge, the left child stays there and the right child is at the
+midpoint. Theta is the extra round-trip optical phase to that midpoint at a
+chosen reference frequency and reference state. It is an angle in radians,
+not a complex propagation factor. The positive phase in the returned right
+coefficient compensates the negative phase of propagation.
+
+The default theta=0 preserves the raw coefficient sum. That alone generally
+does not preserve a complex optical return when scatterer positions change.
+A supplied optical phase preserves only the undepleted single-scattering
+return at the chosen reference when the interval is lossless and has no
+intervening point element. Loss or an element between the children also changes
+return amplitudes, which this phase-only compensation does not preserve.
+It does not force equal spectra at other
+frequencies or equal exact responses with depletion and multiple scattering.
+Choose the reference frame once: do not rephase the stored disorder when
+applying a new strain or temperature state.
+
+### Current limits
+
+This primitive checks numeric dtype and shape, leaving physical values native
+for differentiation, as the existing coefficient constructor does. Parents
+must obey the declared prior; at zero variance their physical value is zero.
+Gaussian children can exceed |r|=1, so the exact solver's domain check remains
+necessary. No clipping, rejection sampling or coefficient normalization is
+performed by the split.
+
+The equal split assumes a constant rate within each parent cell. If a parent
+crosses a change in rate, using new child section rates is a different model
+unless its variances are made consistent. Geometry construction, a rule for
+section boundaries and an optical convergence study of coupled grids remain
+separate work. Existing samples and the published generator are unchanged.
