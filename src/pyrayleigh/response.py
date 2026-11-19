@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field, replace
 import math
 
+import array_api_compat as apc
 import numpy as np
 
 from .backends import complex_arrays, real_arrays
@@ -15,6 +16,9 @@ from .propagation.phase import _GUIDE_PARAMETERS
 from .scattering import PointReflector, crosstalk_from_phases
 from .state import FiberState
 from .state.state import FIELD_NAMES
+
+
+_UNSET = object()
 
 
 @dataclass(frozen=True, eq=False)
@@ -80,14 +84,22 @@ class MultiCoreResponse:
         return f"MultiCoreResponse(shape={self.shape})"
 
 
-def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
-    """Complex reflection and direct transmission at the probe samples.
+def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
+                     method="truncated", loss_convention=None,
+                     denominator_tolerance=_UNSET):
+    """Complex reflection and transmission at the probe samples.
 
-    max_order is a fixed integer: 1 gives the direct point, FBG and Rayleigh
-    returns; 2 and 3 add repeated PointReflector paths with up to
-    2*max_order-1 reflections. Transmission is the direct one-way field.
+    method="truncated" keeps the original model. max_order defaults to 1:
+    direct point, FBG and Rayleigh returns; 2 and 3 add repeated PointReflector
+    paths with up to 2*max_order-1 reflections. Transmission is direct.
     A varying state is frozen at each probe.time sample for the whole path,
     including repeated passages. The original probe and disorder are kept.
+
+    method="exact" uses the static scalar NumPy two-port cascade, including
+    Rayleigh depletion. It requires loss_convention="background" and rejects
+    an explicitly supplied max_order. denominator_tolerance is optional and
+    forwarded to exact_response. These options are exclusive to exact.
+    It does not support time-varying states, multicore fibers or WeakFBG.
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
@@ -104,6 +116,23 @@ def compute_response(fiber, probe, state=None, *, max_order=1, xp=None):
     """
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
+    if not isinstance(method, str):
+        raise TypeError("method must be 'truncated' or 'exact'")
+    if method not in ("truncated", "exact"):
+        raise ValueError("method must be 'truncated' or 'exact'")
+    if method == "exact":
+        if max_order is not _UNSET:
+            raise ValueError("max_order must be omitted for method='exact'")
+        if xp is not None and not apc.is_numpy_namespace(xp):
+            raise NotImplementedError("method='exact' currently supports NumPy only")
+        from .propagation.exact import exact_response
+        options = {}
+        if denominator_tolerance is not _UNSET:
+            options["denominator_tolerance"] = denominator_tolerance
+        return exact_response(fiber, probe, state, loss_convention=loss_convention, **options)
+    if loss_convention is not None or denominator_tolerance is not _UNSET:
+        raise ValueError("loss_convention and denominator_tolerance require method='exact'")
+    max_order = 1 if max_order is _UNSET else max_order
     _check_max_order(max_order)
     if isinstance(fiber, MultiCoreFiber):
         return _multicore_response(fiber, probe, state, max_order, xp)

@@ -1,8 +1,8 @@
 # Optical conventions and loss budget
 
-The NumPy reference is available as `exact_response`. The existing
-`compute_response(..., max_order=...)` API and its numerical behavior stay
-unchanged. An exact selector in that dispatcher has not been added yet.
+The NumPy reference is available through `compute_response(..., method="exact")`.
+The existing `compute_response(..., max_order=...)` calls keep their numerical
+behavior, using `method="truncated"` by default.
 
 ## Scope
 
@@ -16,14 +16,18 @@ ADC samples, FFT distance axes and strain estimation belong to the interrogator.
 The fiber realization is supplied once and reused when its state changes.
 
 ```python
-from pyrayleigh.propagation.exact import exact_response
+from pyrayleigh import compute_response
 
-result = exact_response(fiber, probe, state, loss_convention="background")
+result = compute_response(fiber, probe, state, method="exact",
+                          loss_convention="background")
 ```
 
 `probe` is a `Probe` and `state` can be omitted for the reference state.
 The result is the existing `Response`, with the probe's frequency shape.
 This reference rejects non-NumPy parameters rather than converting them.
+`xp=None`, `numpy` and `array_api_compat.numpy` are accepted for this method;
+other namespaces are not. The standalone `exact_response` function remains
+available from `pyrayleigh.propagation.exact`.
 
 ## Fields and ports
 
@@ -118,7 +122,8 @@ background. Its stored value and legacy interpretation remain unchanged.
 An exact calculation requires `loss_convention="background"` to declare that
 the supplied section coefficients represent background loss. Omitting it or
 using another value is an error. This adds no argument or default to `Section`
-or `compute_response` and does not perform a loss calibration for the caller.
+and does not perform a loss calibration for the caller. The dispatcher rejects
+loss options on the truncated method rather than silently ignoring them.
 
 Do not automatically subtract `rho` from an attenuation coefficient. A mapping
 such as `alpha_background ~= alpha_total_measured - rho_guided_backscatter`
@@ -162,9 +167,12 @@ The existing `max_order=1/2/3` calls keep their meaning: direct Rayleigh and
 localized returns, with optional repeated point reflections. Their transmitted
 field is the direct one-way field; Rayleigh cells currently add no depletion.
 
-The future exact selector is separate from `max_order`. An explicitly supplied
-path order is incompatible with an all-orders calculation. `Response` keeps
-its current fields, shapes and units.
+The exact selector is separate from `max_order`. An explicitly supplied path
+order, including `max_order=1`, is an error for `method="exact"`. With the
+truncated method an omitted order still means 1; explicit orders must remain
+integers 1, 2 or 3. `Response` keeps its current fields, shapes and units.
+Unknown methods are rejected. There is no `method="born"` alias for the
+truncated model: a direct model consistent with exact depletion is still needed.
 
 To isolate multipath, compare exact and a direct-consistent calculation using
 the same local matrices, transmissions, background loss and realization.
@@ -187,6 +195,8 @@ passivity, and the Rayleigh coefficient domain before composing the fiber.
 the cutoff raises `NumericalResonanceError`, with sample index, frequency,
 material position and the failed denominator. It is a refusal cutoff, not an
 accuracy bound for high-Q cavities. No epsilon is added to a denominator.
+The same optional keyword can be passed through `compute_response` with
+`method="exact"`; its value is checked by the cascade.
 
 If the complete prefix has zero left-to-right transmission at every sample,
 the solver returns its left reflection and zero transmission. A disconnected
