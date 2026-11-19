@@ -69,12 +69,15 @@ class BraggGrating:
     Optical parameters remain native scalars; values are checked by two_port.
     Geometry and coupling are fixed in the material coordinate. Uniform
     strain and temperature affect propagation, without changing coupling.
+    segment_length [m] optionally enables midpoint sampling of continuous
+    loads in the exact fiber solver. It does not change the Rayleigh grid.
     """
 
     start: float
     length: float
     bragg_wavelength: object
     coupling: object
+    segment_length: float | None = None
 
     def __post_init__(self):
         for name in ('start', 'length'):
@@ -85,6 +88,11 @@ class BraggGrating:
                 raise ValueError('start must be nonnegative and length must be positive and finite')
         if not math.isfinite(self.end) or self.end <= self.start:
             raise ValueError('grating end must be finite and larger than start')
+        if self.segment_length is not None:
+            if isinstance(self.segment_length, bool) or not isinstance(self.segment_length, Real):
+                raise TypeError('segment_length must be a fixed real number or None')
+            if not math.isfinite(self.segment_length) or self.segment_length <= 0.:
+                raise ValueError('segment_length must be finite and positive')
         _, (wavelength,) = real_arrays(self.bragg_wavelength)
         _, (coupling,) = complex_arrays(self.coupling)
         if wavelength.ndim != 0 or coupling.ndim != 0:

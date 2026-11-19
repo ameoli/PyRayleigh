@@ -1,6 +1,7 @@
 """Scalar static NumPy reference, using point, Rayleigh and Bragg two-ports."""
 
 from dataclasses import replace
+import math
 
 import array_api_compat as apc
 import numpy as np
@@ -39,8 +40,27 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
     edges = sorted({grating.start, grating.end, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
         if grating.start < knot < grating.end)})
-    loads = [tuple(_uniform_value(field, a, b) for field in fields)
-        for a, b in zip(edges[:-1], edges[1:])]
+    if grating.segment_length is None:
+        loads = [tuple(_uniform_value(field, a, b) for field in fields)
+            for a, b in zip(edges[:-1], edges[1:])]
+    else:
+        refined = []
+        for left, right in zip(edges[:-1], edges[1:]):
+            count = max(1, math.ceil((right-left)/grating.segment_length))
+            refined.extend(np.linspace(left, right, count+1)[:-1])
+        edges = np.asarray([*refined, edges[-1]])
+        middle = edges[:-1]+.5*np.diff(edges)
+        if np.any(middle <= edges[:-1]) or np.any(middle >= edges[1:]):
+            raise ValueError('Bragg segments have no representable interior midpoint')
+        loads = list(zip(*(field.value(middle) for field in fields)))
+        merged_edges, merged_loads = [edges[0]], []
+        for right, load in zip(edges[1:], loads):
+            if merged_loads and load == merged_loads[-1]:
+                merged_edges[-1] = right
+            else:
+                merged_edges.append(right)
+                merged_loads.append(load)
+        edges, loads = merged_edges, merged_loads
     if all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
             axial_strain=loads[0][0], temperature_change=loads[0][1])
@@ -62,7 +82,8 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
         except NumericalResonanceError as error:
             raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
                 frequency=float(frequency[error.index]), position=left) from error
-    result.validate_passivity()
+    # Each piece is checked separately; allow accumulated round-off here.
+    result.validate_passivity(tolerance=_TOLERANCE*len(loads))
     return result
 
 
@@ -179,8 +200,9 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     Rayleigh samples are used; no random draws or grid changes are made.
     A single Fiber, static state and NumPy parameters are supported.
     Each Bragg interval needs one lossless section. Strain and temperature
-    may be piecewise constant, split at their profile knots. Continuous
-    gradients are rejected. Curvature and static index changes stay outside.
+    may be piecewise constant, split at their profile knots. An explicit
+    segment_length enables midpoint approximation of continuous gradients;
+    compare refined meshes. Curvature and static index changes stay outside.
     Point and Rayleigh scatterers may lie at the interval boundaries.
     """
     from ..response import Response
