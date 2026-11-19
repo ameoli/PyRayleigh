@@ -16,3 +16,4 @@ from .scattering import (CrosstalkRealization, PointReflector, RayleighRealizati
                          lossless_reflector, rayleigh_coefficients_from_normals,
                          rayleigh_from_normals, weak_fbg_reflection)
 from .response import MultiCoreResponse, Response, compute_response
+from .diagnostics import DiagnosticResponse, compute_response_diagnostics

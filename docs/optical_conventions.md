@@ -222,6 +222,41 @@ Subtract complex fields: `H_residual = H_exact - H_direct`. Power includes the
 interference term `2*real(H_direct*conj(H_residual))`; it is not additive across
 those two fields.
 
+### Optional diagnostic result
+
+```python
+from pyrayleigh import compute_response_diagnostics
+
+diagnostic = compute_response_diagnostics(fiber, probe, state,
+                                         loss_convention="background")
+H_total = diagnostic.total.reflection
+H_direct = diagnostic.direct.reflection
+H_residual = diagnostic.residual.reflection
+power = abs(H_direct)**2 + abs(H_residual)**2 + diagnostic.reflection_interference
+```
+
+`DiagnosticResponse` holds three `Response` objects with the original probe.
+`residual` is formed as `total - direct` for reflection and transmission.
+Reflected residual paths have at least three reflection events; transmitted
+residual paths have at least two. The same scalar static NumPy scope applies.
+There is no new selector or default in `compute_response`.
+
+The signed `reflection_interference` and `transmission_interference` properties
+give the power cross term for each port. They are calculated on request, not
+stored as extra arrays. In particular, `abs(H_residual)**2` is not the change
+in total reflected power: that change also includes the interference term.
+
+This diagnostic runs exact and direct separately on the same fiber, state,
+probe and stored disorder. It retains six complex field arrays, versus two
+for a plain response; both block traversals are performed only when the
+diagnostic function is called. There is no shared-pass optimization yet.
+The exact denominator cutoff is accepted and its failures are propagated.
+
+Metadata records fiber ID, cell count, model scope, backend, precision, boundary
+condition, background-loss declaration and denominator cutoff. It is a summary,
+not a saved fiber or state, and contains no inferred random seed. Keep the
+actual realization and state with the experiment for a reproducible comparison.
+
 Do not replace a small cascade denominator with an epsilon. Near resonances
 require diagnostics and a conditioning check; exactly degenerate cases need
 explicit treatment or a reported failure. Test opaque elements to ensure
@@ -276,6 +311,11 @@ Fields at shared frequencies agree. Refining the frequency grid resolves the
 spectrum; it does not improve the spatial Rayleigh model or regularize a
 small denominator. The analytic reference still uses float64, and its stated
 round-off allowances are not a general high-Q accuracy guarantee.
+
+The final notebook section requests a `DiagnosticResponse` for a point-only
+cavity over an 80 GHz band. It checks direct and residual fields against the
+closed ghost series for both ports, and reconstructs power with the signed
+interference term. The plotted component powers are not independent budgets.
 
 ## Validation covered so far
 
