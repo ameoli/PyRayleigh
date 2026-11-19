@@ -16,28 +16,52 @@ from .cascade import NumericalResonanceError, TwoPort, _TOLERANCE, _check_tolera
 from .phase import optical_path
 
 
+def _midpoint_load(field, start, end):
+    """Local linear interpolation when an absolute midpoint cannot be represented."""
+    profiles = [term.profile for term in field.terms] if isinstance(field, Field) else [field]
+    value, change = 0., 0.
+    for profile in profiles:
+        for index, (left, right) in enumerate(zip(profile.positions[:-1], profile.positions[1:])):
+            if left <= start and end <= right and left < right:
+                delta = profile.values[index+1]-profile.values[index]
+                fraction = ((start-left)+.5*(end-start))/(right-left)
+                value = value+(profile.values[index]+fraction*delta)
+                change = change+delta*((end-start)/(right-left))
+                break
+    return value, change
+
+
 def _uniform_value(field, start, end):
     """Check two interior points per linear piece, without averaging a gradient."""
     if isinstance(field, Field) and field.is_zero:
         return 0.
     profiles = [term.profile for term in field.terms] if isinstance(field, Field) else [field]
+    if all(profile.positions[0] <= start and end <= profile.positions[-1]
+            and np.all(profile.values == profile.values[0]) for profile in profiles):
+        return sum(profile.values[0] for profile in profiles)
     knots = sorted({start, end, *(float(knot) for profile in profiles
         for knot in profile.positions if start < knot < end)})
-    positions = []
+    positions, local_values = [], []
     for left, right in zip(knots[:-1], knots[1:]):
         a, b = left+.25*(right-left), left+.75*(right-left)
         if not left < a < b < right:
-            raise ValueError('Bragg profile interval is too small to sample reliably')
-        positions.extend((a, b))
-    values = field.value(np.asarray(positions))
+            value, change = _midpoint_load(field, left, right)
+            if change != 0.:
+                raise NotImplementedError('Bragg perturbations must be uniform over each interval')
+            local_values.append(value)
+        else:
+            positions.extend((a, b))
+    values = np.concatenate((field.value(np.asarray(positions)), np.asarray(local_values)))
     if not np.all(values == values[0]):
         raise NotImplementedError('Bragg perturbations must be uniform over each interval')
     return values[0]
 
 
-def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
+def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, scatterers=()):
+    """A whole grating, with ordered local Rayleigh two-ports inside."""
     fields = (state.axial_strain, state.temperature_change)
-    edges = sorted({grating.start, grating.end, *(float(knot)
+    positions = {position for position, _ in scatterers}
+    edges = sorted({grating.start, grating.end, *positions, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
         if grating.start < knot < grating.end)})
     if grating.segment_length is None:
@@ -49,22 +73,25 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
             count = max(1, math.ceil((right-left)/grating.segment_length))
             refined.extend(np.linspace(left, right, count+1)[:-1])
         edges = np.asarray([*refined, edges[-1]])
+        if np.any(np.diff(edges) <= 0.):
+            raise ValueError('Bragg segment edges must be distinct')
         middle = edges[:-1]+.5*np.diff(edges)
-        if np.any(middle <= edges[:-1]) or np.any(middle >= edges[1:]):
-            raise ValueError('Bragg segments have no representable interior midpoint')
         loads = list(zip(*(field.value(middle) for field in fields)))
+        for index in np.flatnonzero((middle <= edges[:-1]) | (middle >= edges[1:])):
+            loads[index] = tuple(_midpoint_load(field, edges[index], edges[index+1])[0] for field in fields)
         merged_edges, merged_loads = [edges[0]], []
-        for right, load in zip(edges[1:], loads):
-            if merged_loads and load == merged_loads[-1]:
+        for left, right, load in zip(edges[:-1], edges[1:], loads):
+            if merged_loads and load == merged_loads[-1] and left not in positions:
                 merged_edges[-1] = right
             else:
                 merged_edges.append(right)
                 merged_loads.append(load)
         edges, loads = merged_edges, merged_loads
-    if all(load == loads[0] for load in loads):
+    if not scatterers and all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
             axial_strain=loads[0][0], temperature_change=loads[0][1])
     result = None
+    scatterer_index = 0
     for left, right, (strain, temperature) in zip(edges[:-1], edges[1:], loads):
         coupling = grating.coupling
         offset = left-grating.start
@@ -76,14 +103,20 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance):
             coupling = coupling*phase
         piece = replace(grating, start=left, length=right-left, coupling=coupling)
         block = piece.two_port(frequency, optics, axial_strain=strain, temperature_change=temperature)
+        position = left
         try:
             result = block if result is None else star(result, block,
                 denominator_tolerance=denominator_tolerance)
+            position = right
+            while scatterer_index < len(scatterers) and scatterers[scatterer_index][0] == right:
+                result = star(result, scatterers[scatterer_index][1],
+                    denominator_tolerance=denominator_tolerance)
+                scatterer_index += 1
         except NumericalResonanceError as error:
             raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
-                frequency=float(frequency[error.index]), position=left) from error
+                frequency=float(frequency[error.index]), position=position) from error
     # Each piece is checked separately; allow accumulated round-off here.
-    result.validate_passivity(tolerance=_TOLERANCE*len(loads))
+    result.validate_passivity(tolerance=_TOLERANCE*(len(loads)+len(scatterers)))
     return result
 
 
@@ -156,15 +189,23 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
             raise NotImplementedError('background loss inside Bragg intervals is not supported yet')
         if any(grating.start < point.position < grating.end for point in fiber.elements):
             raise NotImplementedError('point elements inside Bragg intervals are not supported yet')
-        if sample is not None and np.any((sample.positions > grating.start) & (sample.positions < grating.end)):
-            raise NotImplementedError('Rayleigh scatterers inside Bragg intervals are not supported yet')
+        scatterers = []
+        if sample is not None:
+            inside = np.flatnonzero((sample.positions > grating.start) & (sample.positions < grating.end))
+            for index in inside:
+                r, t = sample.coefficients[index], transmission[index]
+                scatterers.append((float(sample.positions[index]), TwoPort(r, -np.conj(r), t, t)))
+            if len(inside):
+                nodes = [node for node in nodes
+                    if not (node[2] == 1 and grating.start < node[0] < grating.end)]
         for name in ('curvature_x', 'curvature_y'):
             if _uniform_value(getattr(state, name), grating.start, grating.end) != 0.:
                 raise NotImplementedError('curvature inside Bragg intervals is not supported yet')
         if (fiber.index_perturbation is not None
                 and _uniform_value(fiber.index_perturbation, grating.start, grating.end) != 0.):
             raise NotImplementedError('static index perturbations inside Bragg intervals are not supported yet')
-        block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance)
+        block = _bragg_block(grating, frequency, section.optics, state, denominator_tolerance,
+            scatterers=scatterers)
         nodes.append((grating.start, grating.end, 2, block))
     nodes.sort(key=lambda item: (item[0], item[2]))
 
@@ -203,7 +244,9 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     may be piecewise constant, split at their profile knots. An explicit
     segment_length enables midpoint approximation of continuous gradients;
     compare refined meshes. Curvature and static index changes stay outside.
-    Point and Rayleigh scatterers may lie at the interval boundaries.
+    Stored Rayleigh scatterers are composed at their material positions,
+    including inside gratings. PointReflector elements may lie at the
+    grating boundaries or outside them.
     """
     from ..response import Response
 

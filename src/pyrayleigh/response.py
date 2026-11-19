@@ -103,8 +103,10 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     Intervals in fiber.gratings accept piecewise constant strain and temperature,
     splitting at profile knots. Set grating.segment_length [m] to approximate
     continuous gradients with constant midpoint loads, and compare finer meshes.
-    Each needs one lossless section, without internal scatterers, curvature or
-    static index changes. Outside profiles use the normal path model.
+    Each needs one lossless section, without internal point elements, curvature
+    or static index changes. Stored Rayleigh samples may lie inside gratings;
+    their coefficients are not redrawn or rephased. Outside profiles use the
+    normal path model.
 
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
