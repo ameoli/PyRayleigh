@@ -222,3 +222,40 @@ It compares complex reflection and transmission, energy residuals, weak and
 strong reflectors, and local-strain crossing counts. Parameters, frequency
 grid, precision, backend and tolerances are recorded. This is a scientific example;
 matching legacy ADC traces alone does not validate the exact optical model.
+
+The notebook also illuminates a uniform point-only fiber from both ends.
+Reversing the geometry swaps the local port coefficients, without complex
+conjugation. Binary-exact positions avoid an extra geometric rounding error.
+All four fields are compared with the analytic cavity matrix. Passivity is
+checked on its largest singular value; lossless cases also require unitarity.
+The examples include distributed background loss and an opaque mirror.
+
+At `R=0.9999`, a fixed 12 GHz band is sampled at 1501, 6001, 24001 and 96001
+frequencies. The 8 MHz grid misses the narrow peak; the 0.125 MHz grid gives
+peak power 0.99973 and FWHM about 3.07944 MHz, versus 3.07767 MHz analytically.
+Fields at shared frequencies agree. Refining the frequency grid resolves the
+spectrum; it does not improve the spatial Rayleigh model or regularize a
+small denominator. The analytic reference still uses float64, and its stated
+round-off allowances are not a general high-Q accuracy guarantee.
+
+## Validation covered so far
+
+Local checks below are kept outside the repository test suite. The notebook
+is the runnable example shipped with the source. This table records coverage,
+not completion of every validation or convergence task in the roadmap.
+
+| Check | Coverage | Where |
+|---|---|---|
+| T1 | Transparent fiber, single point/cell, opaque prefixes and end mirrors | Local NumPy checks |
+| T2 | Independent two-mirror complex fields, weak/strong reflectors and loss | Fabry-Perot notebook |
+| T3 | Static local strain and 2/4/0 crossings of the first repeated point path | Fabry-Perot notebook |
+| T4 | Full-matrix passivity, unitarity and reciprocity; mixed point/Rayleigh matrices against interface equations | Notebook and local NumPy checks |
+| T5 | Weak-limit scaling of one fixed Rayleigh sample, without new draws | Local NumPy checks |
+| T6 | Frequency-grid resolution, near-resonance diagnostics and point paths with apparent position beyond L | Notebook and local NumPy checks |
+
+The T5 comparison with the truncated response includes its missing Rayleigh
+depletion. A direct-consistent calculation is still needed to isolate multiple
+scattering. Coupled spatial refinement, Rayleigh statistics and exact JAX
+parity remain separate validation work. Reversal checks on mixed networks
+avoid coincident point/cell nodes: reversing those would also reverse their
+local composition order, which the current fixed tie convention does not allow.
