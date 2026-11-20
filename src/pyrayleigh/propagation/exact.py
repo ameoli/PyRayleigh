@@ -64,10 +64,11 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
     index = Field() if index_perturbation is None else Field((FieldTerm(index_perturbation),))
     table = optics.bend_loss
     bending = () if table is None else (state.curvature_x, state.curvature_y)
-    apodization = () if grating.apodization is None else (Field((FieldTerm(grating.apodization),)),)
-    if apodization and np.any(grating.apodization.values < 0.):
+    profiles = (grating.apodization, grating.coupling_phase)
+    modulation = tuple(Field((FieldTerm(profile),)) for profile in profiles if profile is not None)
+    if grating.apodization is not None and np.any(grating.apodization.values < 0.):
         raise ValueError('apodization must be nonnegative')
-    fields = (state.axial_strain, state.temperature_change, index)+bending+apodization
+    fields = (state.axial_strain, state.temperature_change, index)+bending+modulation
     positions = {position for position, _ in scatterers}
     edges = sorted({grating.start, grating.end, *positions, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
@@ -120,8 +121,12 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
     for left, right, load, loss in zip(edges[:-1], edges[1:], loads, losses):
         strain, temperature, index_change = load[:3]
         coupling = grating.coupling
-        if apodization:
-            coupling = coupling*load[-1]
+        profile_index = 3+len(bending)
+        if grating.apodization is not None:
+            coupling = coupling*load[profile_index]
+            profile_index += 1
+        if grating.coupling_phase is not None and load[profile_index] != 0.:
+            coupling = coupling*np.exp(1j*load[profile_index])
         offset = left-grating.start
         if offset != 0.:
             bragg_frequency = SPEED_OF_LIGHT/grating.bragg_wavelength
@@ -129,7 +134,8 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
             phase = (np.exp(-2j*optics.reference_propagation_constant*offset)
                 *np.exp(-2j*optics.propagation_constant_offset(bragg_frequency)*offset))
             coupling = coupling*phase
-        piece = replace(grating, start=left, length=right-left, coupling=coupling, apodization=None)
+        piece = replace(grating, start=left, length=right-left, coupling=coupling,
+            apodization=None, coupling_phase=None)
         block = piece.two_port(frequency, optics, axial_strain=strain,
             temperature_change=temperature, attenuation=loss, index_change=index_change)
         position = left

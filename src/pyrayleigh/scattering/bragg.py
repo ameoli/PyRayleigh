@@ -126,6 +126,9 @@ class BraggGrating:
     apodization is an optional nonnegative dimensionless SpatialProfile in
     absolute material coordinates. It multiplies coupling and is zero outside
     its support. A continuous envelope requires segment_length.
+    coupling_phase is an optional SpatialProfile in unwrapped radians on the
+    same coordinates. It multiplies coupling by exp(1j*phase), with phase zero
+    outside its support. Continuous phase profiles also require segment_length.
     """
 
     start: float
@@ -134,6 +137,7 @@ class BraggGrating:
     coupling: object
     segment_length: float | None = None
     apodization: object = None
+    coupling_phase: object = None
 
     def __post_init__(self):
         for name in ('start', 'length'):
@@ -153,10 +157,11 @@ class BraggGrating:
         _, (coupling,) = complex_arrays(self.coupling)
         if wavelength.ndim != 0 or coupling.ndim != 0:
             raise ValueError('grating wavelength and coupling must be scalars')
-        if self.apodization is not None:
-            from ..state import SpatialProfile
-            if not isinstance(self.apodization, SpatialProfile):
-                raise TypeError('apodization must be a SpatialProfile or None')
+        from ..state import SpatialProfile
+        for name in ('apodization', 'coupling_phase'):
+            profile = getattr(self, name)
+            if profile is not None and not isinstance(profile, SpatialProfile):
+                raise TypeError(f'{name} must be a SpatialProfile or None')
 
     @property
     def end(self):
@@ -164,8 +169,9 @@ class BraggGrating:
 
     def _parameters(self):
         parameters = self.bragg_wavelength, self.coupling
-        if self.apodization is not None:
-            parameters += (self.apodization.values,)
+        for profile in (self.apodization, self.coupling_phase):
+            if profile is not None:
+                parameters += (profile.values,)
         return parameters
 
     def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0.,
@@ -178,12 +184,12 @@ class BraggGrating:
         attenuation is spatially uniform background power loss [1/m],
         broadcast with frequency. It may include tabulated bend loss.
         Index changes follow OpticalPath, without extra interface scattering.
-        Apodization uses the same piecewise/midpoint rule as the fiber solver.
-        denominator_tolerance is forwarded to the apodized CMT cascade.
+        Coupling profiles use the same piecewise/midpoint rule as the fiber solver.
+        denominator_tolerance is forwarded to their CMT cascade.
         Input-to-start propagation is separate.
         """
         from ..fiber import GuideOptics
-        from ..propagation.cascade import TwoPort, _check_tolerance
+        from ..propagation.cascade import TwoPort, _TOLERANCE, _check_tolerance
 
         if not isinstance(optics, GuideOptics):
             raise TypeError('optics must be a GuideOptics')
@@ -208,6 +214,7 @@ class BraggGrating:
         if optics.frequency_ref <= 0. or optics.effective_index <= 0. or optics.group_index <= 0.:
             raise ValueError('guide reference frequency and indices must be positive')
 
+        segments = 1
         with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
             bragg_frequency = SPEED_OF_LIGHT/wavelength
             delta_omega = 2*np.pi*(frequency-bragg_frequency)
@@ -220,16 +227,15 @@ class BraggGrating:
                 group_change = group_change+index/optics.group_index
             detuning = (detuning+optics.reference_propagation_constant*phase_change
                 +optics.propagation_constant_offset(frequency)*group_change)
-            if self.apodization is None:
+            if self.apodization is None and self.coupling_phase is None:
                 envelope = uniform_bragg_two_port(detuning, self.coupling, self.length, attenuation=attenuation)
             else:
                 from ..propagation.exact import _midpoint_load, _uniform_value
-                profile = self.apodization
-                edges = sorted({self.start, self.end, *(float(knot) for knot in profile.positions
+                profiles = (self.apodization, self.coupling_phase)
+                edges = sorted({self.start, self.end, *(float(knot) for profile in profiles
+                    if profile is not None for knot in profile.positions
                     if self.start < knot < self.end)})
-                if self.segment_length is None:
-                    weights = np.array([_uniform_value(profile, a, b) for a, b in zip(edges[:-1], edges[1:])])
-                else:
+                if self.segment_length is not None:
                     refined = []
                     for left, right in zip(edges[:-1], edges[1:]):
                         count = max(1, math.ceil((right-left)/self.segment_length))
@@ -237,17 +243,30 @@ class BraggGrating:
                     edges = np.asarray([*refined, edges[-1]])
                     if np.any(np.diff(edges) <= 0.):
                         raise ValueError('Bragg segment edges must be distinct')
-                    weights = np.array([_midpoint_load(profile, a, b)[0] for a, b in zip(edges[:-1], edges[1:])])
-                if np.all(weights == weights[0]):
-                    envelope = uniform_bragg_two_port(detuning, self.coupling*weights[0], self.length,
+                samples = []
+                for profile, default in zip(profiles, (1., 0.)):
+                    if profile is None:
+                        values = np.full(len(edges)-1, default)
+                    elif self.segment_length is None:
+                        values = np.array([_uniform_value(profile, a, b) for a, b in zip(edges[:-1], edges[1:])])
+                    else:
+                        values = np.array([_midpoint_load(profile, a, b)[0] for a, b in zip(edges[:-1], edges[1:])])
+                    samples.append(values)
+                weights, phases = samples
+                coupling = self.coupling*weights
+                if np.any(phases != 0.):
+                    coupling = coupling*np.exp(1j*phases)
+                if np.all(coupling == coupling[0]):
+                    envelope = uniform_bragg_two_port(detuning, coupling[0], self.length,
                         attenuation=attenuation)
                 else:
-                    coupling = (self.coupling*weights).reshape((len(weights),)+(1,)*frequency.ndim)
+                    segments = len(weights)
+                    coupling = coupling.reshape((len(weights),)+(1,)*frequency.ndim)
                     envelope = piecewise_bragg_two_port(detuning[None, ...], coupling, np.diff(edges),
                         attenuation=np.asarray(attenuation)[None, ...], denominator_tolerance=denominator_tolerance)
             carrier = (np.exp(-1j*optics.reference_propagation_constant*self.length)
                 *np.exp(-1j*optics.propagation_constant_offset(bragg_frequency)*self.length))
             result = TwoPort(envelope.r_left, envelope.r_right*carrier**2,
                 envelope.t_left_to_right*carrier, envelope.t_right_to_left*carrier)
-        result.validate_passivity()
+        result.validate_passivity(tolerance=_TOLERANCE*segments)
         return result
