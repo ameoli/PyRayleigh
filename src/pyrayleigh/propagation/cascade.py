@@ -1,4 +1,4 @@
-"""NumPy two-port composition for the scalar reference solver."""
+"""Native two-port fields and NumPy composition for the scalar reference solver."""
 
 from dataclasses import dataclass, field
 from numbers import Real
@@ -39,11 +39,12 @@ class NumericalResonanceError(FloatingPointError):
 
 @dataclass(frozen=True, eq=False)
 class TwoPort:
-    """Copied NumPy fields with a common broadcast shape.
+    """Copied native complex128 fields with a common broadcast shape.
 
     The matrix is [[r_left, t_right_to_left], [t_left_to_right, r_right]].
-    Physical components need validate_passivity() before use. Keeping that
-    check separate lets a cascade report accumulated numerical error.
+    NumPy fields must be finite and are read-only. Other namespaces keep
+    only dtype/shape checks, allowing traced parameters. Numerical passivity
+    checks and star composition currently require NumPy.
     """
 
     r_left: object = field(repr=False)
@@ -54,14 +55,14 @@ class TwoPort:
     def __post_init__(self):
         names = ("r_left", "r_right", "t_left_to_right", "t_right_to_left")
         xp, arrays = complex_arrays(*(getattr(self, name) for name in names))
-        if not apc.is_numpy_namespace(xp):
-            raise NotImplementedError("TwoPort currently supports NumPy only")
-        arrays = np.broadcast_arrays(*arrays)
+        is_numpy = apc.is_numpy_namespace(xp)
+        arrays = xp.broadcast_arrays(*arrays)
         for name, value in zip(names, arrays):
-            if not np.all(np.isfinite(value)):
+            if is_numpy and not np.all(np.isfinite(value)):
                 raise ValueError(f"{name} must be finite")
-            value = np.array(value, dtype=np.complex128, copy=True)
-            value.setflags(write=False)
+            value = xp.asarray(value, dtype=xp.complex128, copy=True)
+            if is_numpy:
+                value.setflags(write=False)
             object.__setattr__(self, name, value)
 
     @property
@@ -70,12 +71,15 @@ class TwoPort:
 
     def scattering_matrix(self):
         """Matrix axes are the final two axes: shape + (2, 2)."""
-        return np.stack((np.stack((self.r_left, self.t_right_to_left), axis=-1),
-                         np.stack((self.t_left_to_right, self.r_right), axis=-1)), axis=-2)
+        xp, _ = complex_arrays(self.r_left)
+        return xp.stack((xp.stack((self.r_left, self.t_right_to_left), axis=-1),
+                         xp.stack((self.t_left_to_right, self.r_right), axis=-1)), axis=-2)
 
     def validate_passivity(self, tolerance=_TOLERANCE):
         """Reject matrices whose largest singular value exceeds 1+tolerance."""
         _check_tolerance(tolerance)
+        if not apc.is_numpy_namespace(apc.array_namespace(self.r_left)):
+            raise NotImplementedError("validate_passivity currently supports NumPy only")
         largest = np.linalg.svd(self.scattering_matrix(), compute_uv=False)[..., 0]
         invalid = ~np.isfinite(largest) | (largest > 1.+tolerance)
         if np.any(invalid):
@@ -96,6 +100,8 @@ def star(left, right, *, denominator_tolerance=_TOLERANCE):
     if not isinstance(left, TwoPort) or not isinstance(right, TwoPort):
         raise TypeError("star requires two TwoPort objects")
     _check_tolerance(denominator_tolerance)
+    if not apc.is_numpy_namespace(apc.array_namespace(left.r_left, right.r_left)):
+        raise NotImplementedError("star currently supports NumPy only")
     with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
         denominator = np.asarray(1.-left.r_right*right.r_left)
         invalid = np.abs(denominator) <= denominator_tolerance
