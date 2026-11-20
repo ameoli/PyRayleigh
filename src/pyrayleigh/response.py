@@ -104,6 +104,7 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     and fiber.index_perturbation, splitting at profile knots.
     Set grating.segment_length [m] to approximate continuous gradients with
     constant midpoint loads, and compare finer meshes.
+    Grating apodization profiles use the same rule and multiply local coupling.
     Each needs one section, whose background attenuation also applies inside
     the grating. With a bend_loss table, curvature is split at profile knots;
     gradients need segment_length. The mesh also splits at table crossings

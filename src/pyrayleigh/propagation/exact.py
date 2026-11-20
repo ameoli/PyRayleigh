@@ -64,7 +64,10 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
     index = Field() if index_perturbation is None else Field((FieldTerm(index_perturbation),))
     table = optics.bend_loss
     bending = () if table is None else (state.curvature_x, state.curvature_y)
-    fields = (state.axial_strain, state.temperature_change, index)+bending
+    apodization = () if grating.apodization is None else (Field((FieldTerm(grating.apodization),)),)
+    if apodization and np.any(grating.apodization.values < 0.):
+        raise ValueError('apodization must be nonnegative')
+    fields = (state.axial_strain, state.temperature_change, index)+bending+apodization
     positions = {position for position, _ in scatterers}
     edges = sorted({grating.start, grating.end, *positions, *(float(knot)
         for field in fields for term in field.terms for knot in term.profile.positions
@@ -107,16 +110,18 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
         edges, loads = merged_edges, merged_loads
     losses = [attenuation]*len(loads)
     if table is not None:
-        losses = [attenuation+table.value(np.hypot(*load[3:]), frequency) for load in loads]
+        losses = [attenuation+table.value(np.hypot(*load[3:5]), frequency) for load in loads]
     if not scatterers and all(load == loads[0] for load in loads):
         return grating.two_port(frequency, optics,
             axial_strain=loads[0][0], temperature_change=loads[0][1],
-            attenuation=losses[0], index_change=loads[0][2])
+            attenuation=losses[0], index_change=loads[0][2], denominator_tolerance=denominator_tolerance)
     result = None
     scatterer_index = 0
     for left, right, load, loss in zip(edges[:-1], edges[1:], loads, losses):
         strain, temperature, index_change = load[:3]
         coupling = grating.coupling
+        if apodization:
+            coupling = coupling*load[-1]
         offset = left-grating.start
         if offset != 0.:
             bragg_frequency = SPEED_OF_LIGHT/grating.bragg_wavelength
@@ -124,7 +129,7 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
             phase = (np.exp(-2j*optics.reference_propagation_constant*offset)
                 *np.exp(-2j*optics.propagation_constant_offset(bragg_frequency)*offset))
             coupling = coupling*phase
-        piece = replace(grating, start=left, length=right-left, coupling=coupling)
+        piece = replace(grating, start=left, length=right-left, coupling=coupling, apodization=None)
         block = piece.two_port(frequency, optics, axial_strain=strain,
             temperature_change=temperature, attenuation=loss, index_change=index_change)
         position = left
