@@ -1,4 +1,4 @@
-"""Native two-port fields and NumPy composition for the scalar reference solver."""
+"""Scalar two-port fields and composition in native array namespaces."""
 
 from dataclasses import dataclass, field
 from numbers import Real
@@ -44,7 +44,7 @@ class TwoPort:
     The matrix is [[r_left, t_right_to_left], [t_left_to_right, r_right]].
     NumPy fields must be finite and are read-only. Other namespaces keep
     only dtype/shape checks, allowing traced parameters. Numerical passivity
-    checks and star composition currently require NumPy.
+    checks currently require NumPy.
     """
 
     r_left: object = field(repr=False)
@@ -90,27 +90,46 @@ class TwoPort:
         return f"TwoPort(shape={self.shape})"
 
 
-def star(left, right, *, denominator_tolerance=_TOLERANCE):
+def star(left, right, *, denominator_tolerance=_TOLERANCE, return_validity=False):
     """Connect left's right port to right's left port.
 
     Validate physical components before composing them. The tolerance is an
     absolute refusal cutoff, not a regularization or an accuracy guarantee.
-    Singular closed cavities also raise; no degenerate-case limit is taken.
+    NumPy raises at the cutoff, including singular closed cavities.
+    Other namespaces mark invalid samples with NaN in all four fields.
+    return_validity=True also returns a native mask for finite arithmetic
+    and denominators above the cutoff; this is not a passivity check.
+    Derivatives are meaningful only for valid samples away from the cutoff.
     """
     if not isinstance(left, TwoPort) or not isinstance(right, TwoPort):
         raise TypeError("star requires two TwoPort objects")
     _check_tolerance(denominator_tolerance)
-    if not apc.is_numpy_namespace(apc.array_namespace(left.r_left, right.r_left)):
-        raise NotImplementedError("star currently supports NumPy only")
-    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
-        denominator = np.asarray(1.-left.r_right*right.r_left)
-        invalid = np.abs(denominator) <= denominator_tolerance
-        if np.any(invalid):
-            index = tuple(int(i) for i in np.argwhere(invalid)[0])
-            raise NumericalResonanceError(index, denominator[index], denominator_tolerance)
-        return TwoPort(
-            r_left=left.r_left + left.t_right_to_left*right.r_left*left.t_left_to_right/denominator,
-            r_right=right.r_right + right.t_left_to_right*left.r_right*right.t_right_to_left/denominator,
-            t_left_to_right=right.t_left_to_right*left.t_left_to_right/denominator,
-            t_right_to_left=left.t_right_to_left*right.t_right_to_left/denominator,
-        )
+    if not isinstance(return_validity, (bool, np.bool_)):
+        raise TypeError("return_validity must be a fixed bool")
+    xp, _ = complex_arrays(left.r_left, right.r_left)
+    is_numpy = apc.is_numpy_namespace(xp)
+    values = (left.r_left, left.r_right, left.t_left_to_right, left.t_right_to_left,
+        right.r_left, right.r_right, right.t_left_to_right, right.t_right_to_left)
+    policy = 'raise' if is_numpy else 'ignore'
+    with np.errstate(over=policy, invalid=policy, divide=policy, under='ignore'):
+        denominator = xp.asarray(1.-left.r_right*right.r_left)
+        valid = xp.isfinite(denominator) & (xp.abs(denominator) > float(denominator_tolerance))
+        if is_numpy:
+            invalid = np.abs(denominator) <= denominator_tolerance
+            if np.any(invalid):
+                index = tuple(int(i) for i in np.argwhere(invalid)[0])
+                raise NumericalResonanceError(index, denominator[index], denominator_tolerance)
+        else:
+            for value in values:
+                valid = valid & xp.isfinite(value)
+            values = tuple(xp.where(valid, value, xp.zeros_like(value)) for value in values)
+            denominator = xp.where(valid, denominator, xp.ones_like(denominator))
+        r_a, rp_a, t_a, tp_a, r_b, rp_b, t_b, tp_b = values
+        fields = (r_a+tp_a*r_b*t_a/denominator, rp_b+t_b*rp_a*tp_b/denominator,
+            t_b*t_a/denominator, tp_a*tp_b/denominator)
+        if not is_numpy:
+            for value in fields:
+                valid = valid & xp.isfinite(value)
+            fields = tuple(xp.where(valid, value, xp.full_like(value, float('nan'))) for value in fields)
+        result = TwoPort(*fields)
+    return (result, valid) if return_validity else result
