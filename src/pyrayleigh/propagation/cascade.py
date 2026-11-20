@@ -43,8 +43,8 @@ class TwoPort:
 
     The matrix is [[r_left, t_right_to_left], [t_left_to_right, r_right]].
     NumPy fields must be finite and are read-only. Other namespaces keep
-    only dtype/shape checks, allowing traced parameters. Numerical passivity
-    checks currently require NumPy.
+    only dtype/shape checks, allowing traced parameters. passivity_mask works
+    in the native namespace; validate_passivity requires NumPy.
     """
 
     r_left: object = field(repr=False)
@@ -74,6 +74,23 @@ class TwoPort:
         xp, _ = complex_arrays(self.r_left)
         return xp.stack((xp.stack((self.r_left, self.t_right_to_left), axis=-1),
                          xp.stack((self.t_left_to_right, self.r_right), axis=-1)), axis=-2)
+
+    def passivity_mask(self, tolerance=_TOLERANCE):
+        """Native mask for finite matrices with sigma_max <= 1+tolerance.
+
+        This checks both coherent input ports, without changing the fields.
+        Invalid samples are excluded from the batched SVD and return False.
+        The boolean check can run inside jit; it is not a smooth constraint.
+        """
+        _check_tolerance(tolerance)
+        xp, _ = complex_arrays(self.r_left)
+        matrix = self.scattering_matrix()
+        bound = 1.+float(tolerance)
+        with np.errstate(over='ignore', invalid='ignore', under='ignore'):
+            eligible = xp.all(xp.isfinite(matrix) & (xp.abs(matrix) <= bound), axis=(-2, -1))
+            safe = xp.where(eligible[..., None, None], matrix, xp.zeros_like(matrix))
+            largest = xp.linalg.svdvals(safe)[..., 0]
+        return eligible & xp.isfinite(largest) & (largest <= bound)
 
     def validate_passivity(self, tolerance=_TOLERANCE):
         """Reject matrices whose largest singular value exceeds 1+tolerance."""
