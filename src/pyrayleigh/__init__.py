@@ -13,7 +13,7 @@ from .propagation import (OpticalPath, direct_response_consistent, multiple_poin
                            reflection_paths_from_positions)
 from .scattering import (BraggGrating, CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
                          crosstalk_from_phases, crosstalk_pairs, generate_crosstalk, generate_rayleigh,
-                         lossless_reflector, piecewise_bragg_two_port, rayleigh_coefficients_from_normals,
+                         linear_chirped_bragg, lossless_reflector, piecewise_bragg_two_port, rayleigh_coefficients_from_normals,
                          rayleigh_from_normals, split_rayleigh_coefficients, uniform_bragg_two_port,
                          weak_fbg_reflection)
 from .response import MultiCoreResponse, Response, compute_response

@@ -1,6 +1,6 @@
 """Uniform coupled-mode sections and their optical reference planes."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from numbers import Real
 
@@ -270,3 +270,35 @@ class BraggGrating:
                 envelope.t_left_to_right*carrier, envelope.t_right_to_left*carrier)
         result.validate_passivity(tolerance=_TOLERANCE*segments)
         return result
+
+
+def linear_chirped_bragg(start, length, bragg_wavelength, coupling, detuning_slope, *,
+                         segment_length, apodization=None):
+    """Build a grating with a linear effective-detuning slope [1/m^2].
+
+    bragg_wavelength fixes the reference at the material midpoint. With
+    u=s-start, phi=detuning_slope*(u*u-length*u) gives
+    delta_eff=delta+detuning_slope*(u-length/2), with zero phase at the left.
+    The quadratic phase is stored as a sampled SpatialProfile. Rebuild with
+    smaller segment_length [m] to refine both this profile and the CMT mesh.
+    Geometry is fixed; phase values retain the native parameter namespace.
+    """
+    from ..state import SpatialProfile
+
+    if segment_length is None:
+        raise ValueError('a chirped grating requires segment_length')
+    grating = BraggGrating(start, length, bragg_wavelength, coupling,
+        segment_length=segment_length, apodization=apodization)
+    xp, _ = complex_arrays(*grating._parameters(), detuning_slope)
+    _, (slope,) = real_arrays(detuning_slope, xp=xp)
+    if slope.ndim != 0:
+        raise ValueError('detuning_slope must be a scalar')
+    if apc.is_numpy_namespace(xp) and not np.isfinite(slope):
+        raise ValueError('detuning_slope must be finite')
+    count = max(2, math.ceil(float(length)/float(segment_length)))
+    positions = np.linspace(float(start), grating.end, count+1)
+    if np.any(np.diff(positions) <= 0.):
+        raise ValueError('chirped grating knots must be distinct')
+    fractions = xp.asarray(np.linspace(0., 1., count+1).tolist(), dtype=xp.float64)
+    phase = slope*(float(length)*fractions)*(float(length)*(fractions-1.))
+    return replace(grating, coupling_phase=SpatialProfile(positions, phase))
