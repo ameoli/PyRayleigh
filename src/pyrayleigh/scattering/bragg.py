@@ -338,3 +338,33 @@ def gaussian_apodization(start, length, sigma, *, sample_spacing):
         values = xp.exp(-.5*(float(length)*(fractions-.5)/width)**2)
     values = xp.where(xp.isfinite(width) & (width > 0.), values, xp.full_like(values, float('nan')))
     return SpatialProfile(positions, values)
+
+
+def phase_shifted_bragg(start, length, bragg_wavelength, coupling, phase_shift=np.pi, *,
+                        shift_position=None, segment_length=None, apodization=None):
+    """Build a grating with one jump in coupling phase [rad], pi by default.
+
+    shift_position [m] is a fixed absolute material coordinate, defaulting
+    to the midpoint. It must be strictly inside the grating. The right
+    part has coupling*exp(1j*phase_shift), in the same frame as the left.
+    The step is stored directly; segment_length is optional for uniform
+    loads, and can sample an optional continuous apodization profile.
+    """
+    from ..state import SpatialProfile
+
+    grating = BraggGrating(start, length, bragg_wavelength, coupling,
+        segment_length=segment_length, apodization=apodization)
+    position = grating.start+.5*(grating.end-grating.start) if shift_position is None else shift_position
+    if isinstance(position, bool) or not isinstance(position, Real):
+        raise TypeError('shift_position must be a fixed real number')
+    if not math.isfinite(position) or not grating.start < position < grating.end:
+        raise ValueError('shift_position must be strictly inside the grating')
+    xp, _ = complex_arrays(*grating._parameters(), phase_shift)
+    _, (phase,) = real_arrays(phase_shift, xp=xp)
+    if phase.ndim != 0:
+        raise ValueError('phase_shift must be a scalar')
+    if apc.is_numpy_namespace(xp) and not np.isfinite(phase):
+        raise ValueError('phase_shift must be finite')
+    zero = xp.zeros_like(phase)
+    profile = SpatialProfile([grating.start, position, position, grating.end], xp.stack((zero, zero, phase, phase)))
+    return replace(grating, coupling_phase=profile)
