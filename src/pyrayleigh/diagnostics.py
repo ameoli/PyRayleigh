@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import array_api_compat as apc
 import numpy as np
 
+from .backends import complex_arrays, real_arrays
 from .propagation.cascade import _TOLERANCE
 from .propagation.direct import direct_response_consistent
 from .propagation.exact import exact_response
@@ -56,6 +57,52 @@ class DiagnosticResponse:
     def transmission_interference(self):
         """Signed power term 2*real(direct_t*conj(residual_t))."""
         return 2*np.real(self.direct.transmission*np.conj(self.residual.transmission))
+
+
+def compare_responses(response, reference, *, field_floor=1e-12):
+    """NumPy field, power and wrapped-phase errors, separately for each port.
+
+    Both responses must have identical frequency and optional time samples.
+    relative_l2 uses max(norm(reference), field_floor) as denominator. Phase
+    errors use only samples where both amplitudes exceed field_floor, and
+    are None when no sample qualifies. No interpolation or weighting is used.
+    The caller chooses the reference; this alone does not prove convergence.
+    """
+    if not isinstance(response, Response) or not isinstance(reference, Response):
+        raise TypeError('response and reference must be Response objects')
+    parameters = [response.reflection, response.transmission, reference.reflection,
+        reference.transmission, response.probe.frequency, reference.probe.frequency, field_floor]
+    parameters.extend(item.probe.time for item in (response, reference) if item.probe.time is not None)
+    xp, arrays = complex_arrays(*parameters)
+    if not apc.is_numpy_namespace(xp):
+        raise NotImplementedError('compare_responses currently supports NumPy only')
+    _, (floor,) = real_arrays(field_floor, xp=xp)
+    if floor.ndim != 0 or not np.isfinite(floor) or floor <= 0.:
+        raise ValueError('field_floor must be a finite positive scalar')
+    if any(not np.all(np.isfinite(value)) for value in arrays):
+        raise ValueError('comparison inputs must be finite')
+    if not np.array_equal(response.probe.frequency, reference.probe.frequency):
+        raise ValueError('responses must have identical frequency samples')
+    time, reference_time = response.probe.time, reference.probe.time
+    if (time is None) != (reference_time is None) or (time is not None and not np.array_equal(time, reference_time)):
+        raise ValueError('responses must have identical time samples')
+
+    report = {}
+    with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+        for port in ('reflection', 'transmission'):
+            value, target = getattr(response, port), getattr(reference, port)
+            amplitude, reference_amplitude = np.abs(value), np.abs(target)
+            difference = np.abs(value-target)
+            error = np.hypot.reduce(difference.reshape(-1), initial=0.)
+            scale = np.hypot.reduce(reference_amplitude.reshape(-1), initial=0.)
+            mask = (amplitude > floor) & (reference_amplitude > floor)
+            phase = np.angle((value[mask]/amplitude[mask])*np.conj(target[mask]/reference_amplitude[mask]))
+            report[port] = {'relative_l2': float(error/max(scale, float(floor))),
+                'max_field_error': float(np.max(difference, initial=0.)),
+                'max_power_error': float(np.max(np.abs(amplitude**2-reference_amplitude**2), initial=0.)),
+                'max_phase_error_rad': float(np.max(np.abs(phase))) if phase.size else None,
+                'phase_samples': int(phase.size)}
+    return report
 
 
 def compute_response_diagnostics(fiber, probe, state=None, *, loss_convention,
