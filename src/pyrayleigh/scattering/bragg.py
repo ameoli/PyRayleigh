@@ -174,6 +174,25 @@ class BraggGrating:
                 parameters += (profile.values,)
         return parameters
 
+    def with_phase_shift(self, phase_shift=np.pi, *, shift_position=None):
+        """Copy the grating, adding a phase step [rad] to its stored phase.
+
+        shift_position [m] is a fixed absolute material coordinate, strictly
+        inside the grating; the default is its midpoint. Repeated calls add
+        steps without wrapping phases or changing the existing interpolant.
+        Each step inserts its boundary into the CMT sampling mesh.
+        """
+        from ..fiber.index_profiles import add_profiles
+
+        xp, _ = complex_arrays(*self._parameters(), phase_shift)
+        _, (phase,) = real_arrays(phase_shift, xp=xp)
+        step = phase_shifted_bragg(self.start, self.length, self.bragg_wavelength,
+            self.coupling, phase, shift_position=shift_position,
+            segment_length=self.segment_length, apodization=self.apodization).coupling_phase
+        if self.coupling_phase is not None:
+            step = add_profiles(self.coupling_phase, step, xp=xp)
+        return replace(self, coupling_phase=step)
+
     def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0.,
                  attenuation=0., index_change=0., denominator_tolerance=64*np.finfo(np.float64).eps):
         """NumPy optical fields at start/end, for absolute frequency [Hz].
