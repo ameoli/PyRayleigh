@@ -73,6 +73,44 @@ def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
     return result
 
 
+def piecewise_bragg_two_port(detuning, coupling, lengths, *, attenuation=0.,
+                              denominator_tolerance=64*np.finfo(np.float64).eps):
+    """NumPy CMT cascade in a common envelope frame, without optical carrier.
+
+    lengths is a nonempty vector of finite nonnegative segment lengths [m].
+    Detuning, complex coupling and background power loss [1/m] broadcast.
+    Their first axis is the segment axis (size 1 or len(lengths)); trailing
+    axes are spectral/batch axes. Scalars apply to every segment. For N
+    segments and F frequencies use shapes (N, F), (N, 1), etc.
+    Coupling phases refer to the same rotating frame across all segments.
+    Each segment checks passivity. The cascade cutoff is forwarded to star;
+    it is not an accuracy guarantee near a narrow resonance.
+    """
+    from ..propagation.cascade import _check_tolerance, star
+
+    xp, _ = complex_arrays(detuning, coupling, lengths, attenuation)
+    if not apc.is_numpy_namespace(xp):
+        raise NotImplementedError('piecewise_bragg_two_port currently supports NumPy only')
+    _, (delta, widths, alpha) = real_arrays(detuning, lengths, attenuation, xp=xp)
+    _, (kappa,) = complex_arrays(coupling, xp=xp)
+    _check_tolerance(denominator_tolerance)
+    if widths.ndim != 1 or widths.size == 0 or not np.all(np.isfinite(widths)) or np.any(widths < 0.):
+        raise ValueError('lengths must be a nonempty vector of finite nonnegative values')
+    if any(not np.all(np.isfinite(value)) for value in (delta, kappa, alpha)):
+        raise ValueError('detuning, coupling and attenuation must be finite')
+    if np.any(alpha < 0.):
+        raise ValueError('attenuation must be nonnegative')
+    delta, kappa, alpha = np.broadcast_arrays(delta, kappa, alpha)
+    shape = (widths.size,)+delta.shape[1:] if delta.ndim else (widths.size,)
+    delta, kappa, alpha = (np.broadcast_to(value, shape) for value in (delta, kappa, alpha))
+    result = None
+    for index, width in enumerate(widths):
+        block = uniform_bragg_two_port(delta[index], kappa[index], width, attenuation=alpha[index])
+        result = block if result is None else star(result, block,
+            denominator_tolerance=denominator_tolerance)
+    return result
+
+
 @dataclass(frozen=True)
 class BraggGrating:
     """Uniform grating on the material interval [start, start+length] [m].
