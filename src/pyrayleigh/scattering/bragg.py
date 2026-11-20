@@ -116,8 +116,9 @@ def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0., return
 
 
 def piecewise_bragg_two_port(detuning, coupling, lengths, *, attenuation=0.,
-                              denominator_tolerance=64*np.finfo(np.float64).eps):
-    """NumPy CMT cascade in a common envelope frame, without optical carrier.
+                              denominator_tolerance=64*np.finfo(np.float64).eps,
+                              return_validity=False):
+    """CMT cascade in a common envelope frame, without optical carrier.
 
     lengths is a nonempty vector of finite nonnegative segment lengths [m].
     Detuning, complex coupling and background power loss [1/m] broadcast.
@@ -127,30 +128,41 @@ def piecewise_bragg_two_port(detuning, coupling, lengths, *, attenuation=0.,
     Coupling phases refer to the same rotating frame across all segments.
     Each segment checks passivity. The cascade cutoff is forwarded to star;
     it is not an accuracy guarantee near a narrow resonance.
+    The fixed segment count allows native tracing. return_validity=True also
+    returns the combined section/cascade mask. NumPy keeps its exceptions;
+    other namespaces return NaN fields at invalid samples, visiting all sections.
     """
     from ..propagation.cascade import _check_tolerance, star
 
     xp, _ = complex_arrays(detuning, coupling, lengths, attenuation)
-    if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError('piecewise_bragg_two_port currently supports NumPy only')
     _, (delta, widths, alpha) = real_arrays(detuning, lengths, attenuation, xp=xp)
     _, (kappa,) = complex_arrays(coupling, xp=xp)
     _check_tolerance(denominator_tolerance)
-    if widths.ndim != 1 or widths.size == 0 or not np.all(np.isfinite(widths)) or np.any(widths < 0.):
+    if not isinstance(return_validity, (bool, np.bool_)):
+        raise TypeError('return_validity must be a fixed bool')
+    if widths.ndim != 1 or widths.shape[0] == 0:
         raise ValueError('lengths must be a nonempty vector of finite nonnegative values')
-    if any(not np.all(np.isfinite(value)) for value in (delta, kappa, alpha)):
-        raise ValueError('detuning, coupling and attenuation must be finite')
-    if np.any(alpha < 0.):
-        raise ValueError('attenuation must be nonnegative')
-    delta, kappa, alpha = np.broadcast_arrays(delta, kappa, alpha)
-    shape = (widths.size,)+delta.shape[1:] if delta.ndim else (widths.size,)
-    delta, kappa, alpha = (np.broadcast_to(value, shape) for value in (delta, kappa, alpha))
-    result = None
-    for index, width in enumerate(widths):
-        block = uniform_bragg_two_port(delta[index], kappa[index], width, attenuation=alpha[index])
-        result = block if result is None else star(result, block,
-            denominator_tolerance=denominator_tolerance)
-    return result
+    if apc.is_numpy_namespace(xp):
+        if not np.all(np.isfinite(widths)) or np.any(widths < 0.):
+            raise ValueError('lengths must be a nonempty vector of finite nonnegative values')
+        if any(not np.all(np.isfinite(value)) for value in (delta, kappa, alpha)):
+            raise ValueError('detuning, coupling and attenuation must be finite')
+        if np.any(alpha < 0.):
+            raise ValueError('attenuation must be nonnegative')
+    delta, kappa, alpha = xp.broadcast_arrays(delta, kappa, alpha)
+    count = widths.shape[0]
+    shape = (count,)+delta.shape[1:] if delta.ndim else (count,)
+    delta, kappa, alpha = (xp.broadcast_to(value, shape) for value in (delta, kappa, alpha))
+    result, valid = None, None
+    for index in range(count):
+        block, local_valid = uniform_bragg_two_port(delta[index, ...], kappa[index, ...], widths[index],
+            attenuation=alpha[index, ...], return_validity=True)
+        if result is None:
+            result, valid = block, local_valid
+        else:
+            result, joined = star(result, block, denominator_tolerance=denominator_tolerance, return_validity=True)
+            valid = valid & local_valid & joined
+    return (result, valid) if return_validity else result
 
 
 @dataclass(frozen=True)
