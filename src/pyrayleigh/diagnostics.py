@@ -1,6 +1,7 @@
 """Optional exact/direct comparison for a fixed scalar fiber."""
 
 from dataclasses import dataclass, field
+import math
 
 import array_api_compat as apc
 import numpy as np
@@ -102,6 +103,36 @@ def compare_responses(response, reference, *, field_floor=1e-12):
                 'max_power_error': float(np.max(np.abs(amplitude**2-reference_amplitude**2), initial=0.)),
                 'max_phase_error_rad': float(np.max(np.abs(phase))) if phase.size else None,
                 'phase_samples': int(phase.size)}
+    return report
+
+
+def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., field_floor=1e-12):
+    """Compare three NumPy responses at a fixed refinement ratio.
+
+    The caller must keep the same physical model, state and disorder, with
+    h_medium=h_coarse/refinement_ratio and h_fine=h_medium/refinement_ratio.
+    Rebuild sampled chirp/apodization profiles too when refining those grids.
+    Order uses absolute L2 differences, not the separately normalized errors.
+    It is None if either difference is at or below field_floor. This observed
+    order is not a true-error estimate or proof of asymptotic convergence.
+    """
+    xp, (ratio,) = real_arrays(refinement_ratio)
+    if not apc.is_numpy_namespace(xp):
+        raise NotImplementedError('response_convergence_report currently supports NumPy only')
+    if ratio.ndim != 0 or not np.isfinite(ratio) or ratio <= 1.:
+        raise ValueError('refinement_ratio must be a finite scalar greater than one')
+    report = {'refinement_ratio': float(ratio),
+        'coarse_to_medium': compare_responses(coarse, medium, field_floor=field_floor),
+        'medium_to_fine': compare_responses(medium, fine, field_floor=field_floor),
+        'l2_differences': {}, 'observed_order': {}}
+    with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+        for port in ('reflection', 'transmission'):
+            values = [getattr(item, port) for item in (coarse, medium, fine)]
+            errors = tuple(float(np.hypot.reduce(np.abs(a-b).reshape(-1), initial=0.))
+                for a, b in zip(values[:-1], values[1:]))
+            report['l2_differences'][port] = errors
+            report['observed_order'][port] = ((math.log(errors[0])-math.log(errors[1]))/math.log(float(ratio))
+                if min(errors) > float(field_floor) else None)
     return report
 
 

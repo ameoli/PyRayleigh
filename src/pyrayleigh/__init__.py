@@ -18,6 +18,7 @@ from .scattering import (BraggGrating, CrosstalkRealization, PointReflector, Ray
                          rayleigh_from_normals, split_rayleigh_coefficients, uniform_bragg_two_port,
                          weak_fbg_reflection)
 from .response import MultiCoreResponse, Response, compute_response
-from .diagnostics import DiagnosticResponse, compare_responses, compute_response_diagnostics
+from .diagnostics import (DiagnosticResponse, compare_responses, compute_response_diagnostics,
+                          response_convergence_report)
 from .sampling import rayleigh_resolution_report
 from .refinement import refine_rayleigh_from_normals
