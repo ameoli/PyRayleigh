@@ -12,7 +12,7 @@ from .propagation import (OpticalPath, direct_response_consistent, multiple_poin
                            point_response, rayleigh_response, reciprocal_transmission_factors,
                            reflection_paths_from_positions)
 from .scattering import (BraggGrating, CrosstalkRealization, PointReflector, RayleighRealization, WeakFBG,
-                         crosstalk_from_phases, crosstalk_pairs, generate_crosstalk, generate_rayleigh,
+                         crosstalk_from_phases, crosstalk_pairs, gaussian_apodization, generate_crosstalk, generate_rayleigh,
                          linear_chirped_bragg, lossless_reflector, piecewise_bragg_two_port, rayleigh_coefficients_from_normals,
                          rayleigh_from_normals, split_rayleigh_coefficients, uniform_bragg_two_port,
                          weak_fbg_reflection)

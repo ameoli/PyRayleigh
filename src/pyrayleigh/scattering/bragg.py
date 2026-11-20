@@ -302,3 +302,39 @@ def linear_chirped_bragg(start, length, bragg_wavelength, coupling, detuning_slo
     fractions = xp.asarray(np.linspace(0., 1., count+1).tolist(), dtype=xp.float64)
     phase = slope*(float(length)*fractions)*(float(length)*(fractions-1.))
     return replace(grating, coupling_phase=SpatialProfile(positions, phase))
+
+
+def gaussian_apodization(start, length, sigma, *, sample_spacing):
+    """Sample a unit-peak Gaussian envelope, with width sigma [m].
+
+    Coordinates are absolute material metres. The Gaussian is truncated to
+    [start, start+length]; endpoint values follow the Gaussian, and the
+    profile is zero outside. The fixed grid includes the material midpoint.
+    Rebuild with smaller sample_spacing to refine this linear profile, and
+    refine the grating's segment_length for the CMT calculation.
+    """
+    from ..state import SpatialProfile
+
+    for name, value in (('start', start), ('length', length), ('sample_spacing', sample_spacing)):
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise TypeError(f'{name} must be a fixed real number')
+        if not math.isfinite(value) or value < 0. or (name != 'start' and value == 0.):
+            raise ValueError('start must be nonnegative; length and sample_spacing must be positive and finite')
+    end = float(start)+float(length)
+    if not math.isfinite(end) or end <= start:
+        raise ValueError('profile end must be finite and larger than start')
+    xp, (width,) = real_arrays(sigma)
+    if width.ndim != 0:
+        raise ValueError('sigma must be a scalar')
+    if apc.is_numpy_namespace(xp) and (not np.isfinite(width) or width <= 0.):
+        raise ValueError('sigma must be finite and positive')
+    count = max(2, math.ceil(float(length)/float(sample_spacing)))
+    count += count % 2
+    positions = np.linspace(float(start), end, count+1)
+    if np.any(np.diff(positions) <= 0.):
+        raise ValueError('Gaussian profile knots must be distinct')
+    fractions = xp.asarray(np.linspace(0., 1., count+1).tolist(), dtype=xp.float64)
+    with np.errstate(over='ignore', under='ignore', divide='ignore', invalid='ignore'):
+        values = xp.exp(-.5*(float(length)*(fractions-.5)/width)**2)
+    values = xp.where(xp.isfinite(width) & (width > 0.), values, xp.full_like(values, float('nan')))
+    return SpatialProfile(positions, values)
