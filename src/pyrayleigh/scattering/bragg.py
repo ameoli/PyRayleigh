@@ -11,8 +11,42 @@ from ..backends import complex_arrays, real_arrays
 from ..constants import SPEED_OF_LIGHT
 
 
-def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
-    """NumPy CMT solution, with detuning and complex coupling in 1/m.
+def _native_uniform_bragg(delta, kappa, width, alpha, xp):
+    from ..propagation.cascade import TwoPort
+
+    delta, kappa, alpha = xp.broadcast_arrays(delta, kappa, alpha)
+    valid = (xp.isfinite(delta) & xp.isfinite(kappa) & xp.isfinite(alpha)
+        & (alpha >= 0.) & xp.isfinite(width) & (width >= 0.))
+    delta, kappa, alpha, width = (xp.where(valid, value, xp.zeros_like(value))
+        for value in (delta, kappa, alpha, width))
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
+        d = xp.astype(delta*width, xp.complex128)-.5j*xp.astype(alpha*width, xp.complex128)
+        k = kappa*width
+        q = xp.astype(xp.real(k*xp.conj(k)), xp.complex128)-d*d
+        valid = valid & xp.isfinite(d) & xp.isfinite(k) & xp.isfinite(q)
+        d, k, q = (xp.where(valid, value, xp.zeros_like(value)) for value in (d, k, q))
+        small = xp.abs(q) < 1e-4
+        local = xp.where(small, q, xp.zeros_like(q))
+        # Entire functions of q avoid the square-root singularity at a band edge.
+        c0 = 1.+local*(.5+local*(1./24.+local*(1./720.+local/40320.)))
+        s0 = 1.+local*(1./6.+local*(1./120.+local*(1./5040.+local/362880.)))
+        root = xp.sqrt(xp.where(small, xp.ones_like(q), q))
+        decay = xp.exp(-root)
+        c = xp.where(small, c0, .5*(1.+decay*decay))
+        s = xp.where(small, s0, -xp.expm1(-2.*root)/(2.*root))
+        numerator = xp.where(small, xp.ones_like(q), decay)
+        denominator = c+1j*d*s
+        t = numerator/denominator
+        fields = (-1j*xp.conj(k)*s/denominator, -1j*k*s/denominator, t, t)
+        for value in fields:
+            valid = valid & xp.isfinite(value)
+        valid = valid & TwoPort(*fields).passivity_mask()
+        fields = tuple(xp.where(valid, value, xp.full_like(value, float('nan'))) for value in fields)
+    return TwoPort(*fields), valid
+
+
+def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0., return_validity=False):
+    """CMT solution, with detuning and complex coupling in 1/m.
 
     length [m] is a finite nonnegative scalar. Detuning, coupling and
     background power attenuation [1/m] broadcast. Attenuation is nonnegative.
@@ -22,14 +56,22 @@ def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
     Both ports use this common rotating frame: kappa=0 gives
     t=exp(-(alpha/2+i*delta)*length). Optical carrier phase is not included.
     No material mapping or imposed state is applied here.
+    NumPy retains numerical exceptions. Other namespaces keep native fields;
+    invalid parameters/arithmetic or failed passivity produce NaN samples.
+    return_validity=True also returns the sample mask, usable inside jit.
     """
     from ..propagation.cascade import TwoPort
 
     xp, _ = complex_arrays(detuning, coupling, length, attenuation)
-    if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError('uniform_bragg_two_port currently supports NumPy only')
     _, (delta, width, alpha) = real_arrays(detuning, length, attenuation, xp=xp)
     _, (kappa,) = complex_arrays(coupling, xp=xp)
+    if not isinstance(return_validity, (bool, np.bool_)):
+        raise TypeError('return_validity must be a fixed bool')
+    if width.ndim != 0:
+        raise ValueError('length must be a scalar')
+    if not apc.is_numpy_namespace(xp):
+        result, valid = _native_uniform_bragg(delta, kappa, width, alpha, xp)
+        return (result, valid) if return_validity else result
     if width.ndim != 0 or not np.isfinite(width) or width < 0.:
         raise ValueError('length must be a finite nonnegative scalar')
     if not np.all(np.isfinite(alpha)) or np.any(alpha < 0.):
@@ -70,7 +112,7 @@ def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0.):
         result = TwoPort(-1j*np.conj(k)*s/denominator, -1j*k*s/denominator,
             transmission, transmission)
     result.validate_passivity()
-    return result
+    return (result, xp.ones_like(result.r_left, dtype=xp.bool)) if return_validity else result
 
 
 def piecewise_bragg_two_port(detuning, coupling, lengths, *, attenuation=0.,
