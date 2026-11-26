@@ -4,3 +4,4 @@ from .paths import point_reflection_paths, reflection_paths_from_positions
 from .multiple import (multiple_point_response, point_path_amplitude,
                         reciprocal_transmission_factors)
 from .direct import direct_response_consistent
+from .exact import exact_two_port

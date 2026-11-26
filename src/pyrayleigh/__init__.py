@@ -7,7 +7,7 @@ from .fiber import (BendLossTable, Fiber, GuideOptics, MultiCoreFiber, Section, 
                     ornstein_uhlenbeck_index_profile)
 from .probe import Probe
 from .state import Field, FieldTerm, FiberState, SpatialProfile, TimeHistory, cox_strain
-from .propagation import (OpticalPath, direct_response_consistent, multiple_point_response, optical_path,
+from .propagation import (OpticalPath, direct_response_consistent, exact_two_port, multiple_point_response, optical_path,
                            point_path_amplitude, point_reflection_paths,
                            point_response, rayleigh_response, reciprocal_transmission_factors,
                            reflection_paths_from_positions)

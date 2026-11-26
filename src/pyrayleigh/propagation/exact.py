@@ -365,6 +365,35 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     """
     from ..response import Response
 
+    result, _ = _exact_cascade(fiber, probe, state, loss_convention=loss_convention,
+        denominator_tolerance=denominator_tolerance, xp=xp, left_only=True)
+    return Response(probe, reflection=result.r_left, transmission=result.t_left_to_right)
+
+
+def exact_two_port(fiber, probe, state=None, *, loss_convention,
+                   denominator_tolerance=_TOLERANCE, xp=None, return_validity=False):
+    """Full fiber TwoPort at the probe samples, with both external planes.
+
+    The matrix is [[r_left, t_right_to_left], [t_left_to_right, r_right]],
+    with shape probe.shape + (2, 2). Coefficients keep their native namespace.
+    Static/frozen scalar fibers, background loss and Bragg meshes follow
+    exact_response. The original fiber, probe and disorder are not changed.
+    return_validity=True also returns a native sample mask for valid physical
+    inputs and finite arithmetic above the denominator cutoff, not an error
+    estimate. NumPy still raises; invalid native samples have four NaN fields.
+    The whole cascade is visited even when left transmission vanishes.
+    A singular closed cavity is refused even behind an opaque component;
+    exact_response can still give its unaffected left response in that case.
+    With JAX, extract the fields or scattering_matrix() inside a jit wrapper.
+    """
+    if not isinstance(return_validity, (bool, np.bool_)):
+        raise TypeError('return_validity must be a fixed bool')
+    result, valid = _exact_cascade(fiber, probe, state, loss_convention=loss_convention,
+        denominator_tolerance=denominator_tolerance, xp=xp, left_only=False)
+    return (result, valid) if return_validity else result
+
+
+def _exact_cascade(fiber, probe, state, *, loss_convention, denominator_tolerance, xp, left_only):
     path, xp, arrays = _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, xp)
     is_numpy = apc.is_numpy_namespace(xp)
     if is_numpy:
@@ -380,7 +409,7 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     policy = 'raise' if is_numpy else 'ignore'
     with np.errstate(over=policy, invalid=policy, divide=policy, under='ignore'):
         for position, block in blocks:
-            if not is_numpy:
+            if not is_numpy and left_only:
                 denominator = 1.-result.r_right*block.r_left
                 # A closed cavity behind an opaque prefix cannot change the left response.
                 hidden = ((result.t_left_to_right == 0.)
@@ -397,10 +426,13 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
             except NumericalResonanceError as error:
                 raise NumericalResonanceError(error.index, error.denominator, error.tolerance,
                     frequency=float(frequency[error.index]), position=position) from error
-            if np.all(result.t_left_to_right == 0.):
+            if is_numpy and left_only and np.all(result.t_left_to_right == 0.):
                 break
-    if not is_numpy:
-        reflection = xp.where(valid, result.r_left, xp.full_like(result.r_left, float('nan')))
-        transmission = xp.where(valid, result.t_left_to_right, xp.full_like(result.t_left_to_right, float('nan')))
-        return Response(probe, reflection=reflection, transmission=transmission)
-    return Response(probe, reflection=result.r_left, transmission=result.t_left_to_right)
+    if is_numpy:
+        valid = xp.ones_like(result.r_left, dtype=xp.bool)
+    else:
+        fields = (result.r_left, result.r_right, result.t_left_to_right, result.t_right_to_left)
+        for value in fields:
+            valid = valid & xp.isfinite(value)
+        result = TwoPort(*(xp.where(valid, value, xp.full_like(value, float('nan'))) for value in fields))
+    return result, valid
