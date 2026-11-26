@@ -1,4 +1,4 @@
-"""Scalar static NumPy reference, using point, Rayleigh and Bragg two-ports."""
+"""Scalar static cascades of point, Rayleigh and Bragg two-ports."""
 
 from dataclasses import replace
 import math
@@ -6,7 +6,7 @@ import math
 import array_api_compat as apc
 import numpy as np
 
-from ..backends import complex_arrays
+from ..backends import complex_arrays, real_arrays
 from ..constants import SPEED_OF_LIGHT
 from ..fiber import Fiber, MultiCoreFiber
 from ..probe import Probe
@@ -155,8 +155,7 @@ def _bragg_block(grating, frequency, optics, state, denominator_tolerance, *, sc
     return result
 
 
-def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_TOLERANCE):
-    """Validate the whole model, then visit propagation and local two-ports."""
+def _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, xp):
     _check_tolerance(denominator_tolerance)
     if not isinstance(loss_convention, str) or loss_convention != "background":
         raise ValueError("loss_convention must be 'background'")
@@ -184,9 +183,20 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
         parameters.extend(grating._parameters())
     if fiber.rayleigh is not None:
         parameters.append(fiber.rayleigh.coefficients)
-    xp, arrays = complex_arrays(*parameters)
+    xp, arrays = complex_arrays(*parameters, xp=xp)
+    return path, xp, arrays
+
+
+def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_TOLERANCE):
+    """NumPy blocks, also used by the direct-path reference."""
+    path, xp, arrays = _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, None)
     if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError("static two-port responses currently support NumPy only")
+        raise NotImplementedError("the direct-path reference currently supports NumPy only")
+    return _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance)
+
+
+def _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance):
+    fiber, state = path.fiber, path.state
     if any(not np.all(np.isfinite(value)) for value in arrays):
         raise ValueError("response parameters must be finite")
     frequency = np.asarray(probe.frequency)
@@ -262,13 +272,70 @@ def _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance=_
     return blocks()
 
 
+def _native_static_blocks(path, probe, xp, arrays):
+    fiber = path.fiber
+    if fiber.gratings:
+        raise NotImplementedError('native exact fiber responses do not yet support Bragg intervals')
+    _, (frequency,) = real_arrays(probe.frequency, xp=xp)
+    valid = (xp.isfinite(frequency) & (frequency > 0.)
+        & (frequency >= float(fiber.frequency_min)) & (frequency <= float(fiber.frequency_max)))
+    for value in arrays[1:]:
+        valid = valid & xp.all(xp.isfinite(value))
+    for section in fiber.sections:
+        guide = section.optics
+        _, (alpha, rate, reference, phase_index, group_index) = real_arrays(section.attenuation,
+            section.rayleigh_coefficient, guide.frequency_ref, guide.effective_index, guide.group_index, xp=xp)
+        valid = valid & (alpha >= 0.) & (rate >= 0.) & (reference > 0.) & (phase_index > 0.) & (group_index > 0.)
+        if guide.bend_loss is not None:
+            _, (loss,) = real_arrays(guide.bend_loss.attenuation, xp=xp)
+            valid = valid & xp.all(loss >= 0.)
+
+    nodes = []
+    for point in fiber.elements:
+        _, fields = complex_arrays(point.r_left, point.r_right,
+            point.t_left_to_right, point.t_right_to_left, xp=xp)
+        block = TwoPort(*fields)
+        valid = valid & block.passivity_mask()
+        nodes.append((float(point.position), 0, block))
+    if fiber.rayleigh is not None:
+        sample = fiber.rayleigh
+        _, (coefficients,) = complex_arrays(sample.coefficients, xp=xp)
+        power = xp.real(coefficients*xp.conj(coefficients))
+        allowed = xp.isfinite(power) & (power <= 1.)
+        valid = valid & xp.all(allowed)
+        transmission = xp.sqrt(1.-xp.where(allowed, power, xp.zeros_like(power)))
+        for index, position in enumerate(sample.positions):
+            r, t = coefficients[index], transmission[index]
+            nodes.append((float(position), 1, TwoPort(r, -xp.conj(r), t, t)))
+    nodes.sort(key=lambda node: (node[0], node[1]))
+    blocks, previous = [], 0.
+    for position, _, block in nodes:
+        if position > previous:
+            p = path.transmission(previous, position, frequency, xp=xp)
+            propagation = TwoPort(0., 0., p, p)
+            valid = valid & propagation.passivity_mask()
+            blocks.append((position, propagation))
+        blocks.append((position, block))
+        previous = position
+    p = path.transmission(previous, float(fiber.length), frequency, xp=xp)
+    propagation = TwoPort(0., 0., p, p)
+    valid = valid & propagation.passivity_mask()
+    blocks.append((float(fiber.length), propagation))
+    return blocks, valid
+
+
 def exact_response(fiber, probe, state=None, *, loss_convention,
-                   denominator_tolerance=_TOLERANCE):
+                   denominator_tolerance=_TOLERANCE, xp=None):
     """Left reflection and transmission, with all orders of discrete scattering.
 
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
-    A single Fiber, static state and NumPy parameters are supported.
+    A single Fiber and static or frozen state are required. NumPy supports
+    all the blocks below. Other native namespaces currently support point
+    and Rayleigh scattering, with differentiable coefficients and path loads.
+    Invalid native samples return NaN fields, including at the denominator
+    cutoff. NumPy keeps its numerical exceptions. Rayleigh transmission
+    derivatives require abs(r) < 1; geometry and disorder are not resampled.
     Each Bragg interval needs one section, with its background attenuation.
     Strain, temperature and static index changes are split at profile knots.
     Each piece must be uniform unless segment_length is set.
@@ -283,13 +350,33 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     """
     from ..response import Response
 
-    blocks = _static_blocks(fiber, probe, state, loss_convention, denominator_tolerance)
-    frequency = np.asarray(probe.frequency)
-    zero = np.zeros_like(frequency, dtype=np.complex128)
-    one = np.ones_like(zero)
+    path, xp, arrays = _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, xp)
+    is_numpy = apc.is_numpy_namespace(xp)
+    if is_numpy:
+        blocks = _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance)
+    else:
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
+            blocks, valid = _native_static_blocks(path, probe, xp, arrays)
+    _, (frequency,) = real_arrays(probe.frequency, xp=xp)
+    zero = xp.zeros_like(frequency, dtype=xp.complex128)
+    one = xp.ones_like(zero)
     result = TwoPort(zero, zero, one, one)
-    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+    identity = (zero, zero, one, one)
+    policy = 'raise' if is_numpy else 'ignore'
+    with np.errstate(over=policy, invalid=policy, divide=policy, under='ignore'):
         for position, block in blocks:
+            if not is_numpy:
+                denominator = 1.-result.r_right*block.r_left
+                # A closed cavity behind an opaque prefix cannot change the left response.
+                hidden = ((result.t_left_to_right == 0.)
+                    & (xp.abs(denominator) <= float(denominator_tolerance)))
+                active = ~hidden
+                old = (result.r_left, result.r_right, result.t_left_to_right, result.t_right_to_left)
+                left = TwoPort(*(xp.where(active, value, initial) for value, initial in zip(old, identity)))
+                updated = star(left, block, denominator_tolerance=denominator_tolerance)
+                fields = (updated.r_left, updated.r_right, updated.t_left_to_right, updated.t_right_to_left)
+                result = TwoPort(*(xp.where(active, value, previous) for value, previous in zip(fields, old)))
+                continue
             try:
                 result = star(result, block, denominator_tolerance=denominator_tolerance)
             except NumericalResonanceError as error:
@@ -297,4 +384,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
                     frequency=float(frequency[error.index]), position=position) from error
             if np.all(result.t_left_to_right == 0.):
                 break
+    if not is_numpy:
+        reflection = xp.where(valid, result.r_left, xp.full_like(result.r_left, float('nan')))
+        transmission = xp.where(valid, result.t_left_to_right, xp.full_like(result.t_left_to_right, float('nan')))
+        return Response(probe, reflection=reflection, transmission=transmission)
     return Response(probe, reflection=result.r_left, transmission=result.t_left_to_right)

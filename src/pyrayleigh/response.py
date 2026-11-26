@@ -95,8 +95,11 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     A varying state is frozen at each probe.time sample for the whole path,
     including repeated passages. The original probe and disorder are kept.
 
-    method="exact" uses the static scalar NumPy two-port cascade, including
-    Rayleigh depletion. It requires loss_convention="background" and rejects
+    method="exact" uses a static scalar two-port cascade, including Rayleigh
+    depletion. NumPy supports Bragg intervals too; other native namespaces
+    currently support points and stored Rayleigh samples. Invalid native
+    samples give NaN fields; NumPy keeps numerical exceptions.
+    It requires loss_convention="background" and rejects
     an explicitly supplied max_order. denominator_tolerance is optional and
     forwarded to exact_response. These options are exclusive to exact.
     It does not support time-varying states, multicore fibers or WeakFBG.
@@ -138,13 +141,11 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     if method == "exact":
         if max_order is not _UNSET:
             raise ValueError("max_order must be omitted for method='exact'")
-        if xp is not None and not apc.is_numpy_namespace(xp):
-            raise NotImplementedError("method='exact' currently supports NumPy only")
         from .propagation.exact import exact_response
         options = {}
         if denominator_tolerance is not _UNSET:
             options["denominator_tolerance"] = denominator_tolerance
-        return exact_response(fiber, probe, state, loss_convention=loss_convention, **options)
+        return exact_response(fiber, probe, state, loss_convention=loss_convention, xp=xp, **options)
     if loss_convention is not None or denominator_tolerance is not _UNSET:
         raise ValueError("loss_convention and denominator_tolerance require method='exact'")
     max_order = 1 if max_order is _UNSET else max_order
