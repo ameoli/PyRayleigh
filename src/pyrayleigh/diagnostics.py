@@ -175,8 +175,37 @@ def compare_responses(response, reference, *, field_floor=1e-12, xp=None):
     return report
 
 
-def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., field_floor=1e-12):
-    """Compare three NumPy responses at a fixed refinement ratio.
+def _native_convergence(coarse, medium, fine, ratio, field_floor, xp):
+    _, (floor,) = real_arrays(field_floor, xp=xp)
+    if ratio.ndim != 0 or floor.ndim != 0:
+        raise ValueError('refinement_ratio and field_floor must be scalars')
+    report = {'refinement_ratio': ratio,
+        'coarse_to_medium': compare_responses(coarse, medium, field_floor=field_floor, xp=xp),
+        'medium_to_fine': compare_responses(medium, fine, field_floor=field_floor, xp=xp),
+        'l2_differences': {}, 'observed_order': {}}
+    parameters_valid = xp.isfinite(ratio) & (ratio > 1.) & xp.isfinite(floor) & (floor > 0.)
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
+        for port in ('reflection', 'transmission'):
+            valid = (parameters_valid
+                & xp.isfinite(report['coarse_to_medium'][port]['relative_l2'])
+                & xp.isfinite(report['medium_to_fine'][port]['relative_l2']))
+            _, values = complex_arrays(*(getattr(item, port) for item in (coarse, medium, fine)), xp=xp)
+            values = tuple(xp.where(valid, value, xp.zeros_like(value)) for value in values)
+            errors = tuple(_native_l2(xp.abs(a-b), xp) for a, b in zip(values[:-1], values[1:]))
+            valid = valid & xp.isfinite(errors[0]) & xp.isfinite(errors[1])
+            report['l2_differences'][port] = tuple(xp.where(valid, error,
+                xp.full_like(error, float('nan'))) for error in errors)
+            resolved = valid & (errors[0] > floor) & (errors[1] > floor)
+            first, second = (xp.where(resolved, error, xp.ones_like(error)) for error in errors)
+            safe_ratio = xp.where(parameters_valid, ratio, xp.full_like(ratio, 2.))
+            order = (xp.log(first)-xp.log(second))/xp.log(safe_ratio)
+            report['observed_order'][port] = xp.where(resolved & xp.isfinite(order), order,
+                xp.full_like(order, float('nan')))
+    return report
+
+
+def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., field_floor=1e-12, xp=None):
+    """Compare three responses at a fixed refinement ratio.
 
     The caller must keep the same physical model, state and disorder, with
     h_medium=h_coarse/refinement_ratio and h_fine=h_medium/refinement_ratio.
@@ -184,19 +213,24 @@ def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., fi
     Order uses absolute L2 differences, not the separately normalized errors.
     It is None if either difference is at or below field_floor. This observed
     order is not a true-error estimate or proof of asymptotic convergence.
+    NumPy keeps Python scalars, None and numerical exceptions. Other namespaces
+    return native scalars, with NaN for unresolved orders. Invalid native
+    ratios, floors or samples also give NaN differences/orders; the two pair
+    reports follow compare_responses independently. Shape/time-presence errors
+    still raise. Native derivatives exclude zero differences and floor crossings.
     """
-    xp, (ratio,) = real_arrays(refinement_ratio)
+    if not all(isinstance(item, Response) for item in (coarse, medium, fine)):
+        raise TypeError('coarse, medium and fine must be Response objects')
+    fields = [getattr(item, port) for item in (coarse, medium, fine) for port in ('reflection', 'transmission')]
+    xp, _ = complex_arrays(*fields, refinement_ratio, field_floor, xp=xp)
+    xp, (ratio,) = real_arrays(refinement_ratio, xp=xp)
     if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError('response_convergence_report currently supports NumPy only')
+        return _native_convergence(coarse, medium, fine, ratio, field_floor, xp)
     if ratio.ndim != 0 or not np.isfinite(ratio) or ratio <= 1.:
         raise ValueError('refinement_ratio must be a finite scalar greater than one')
-    for response in (coarse, medium, fine):
-        if isinstance(response, Response) and not apc.is_numpy_namespace(
-                array_namespace(response.reflection, response.transmission)):
-            raise NotImplementedError('response_convergence_report currently supports NumPy only')
     report = {'refinement_ratio': float(ratio),
-        'coarse_to_medium': compare_responses(coarse, medium, field_floor=field_floor),
-        'medium_to_fine': compare_responses(medium, fine, field_floor=field_floor),
+        'coarse_to_medium': compare_responses(coarse, medium, field_floor=field_floor, xp=xp),
+        'medium_to_fine': compare_responses(medium, fine, field_floor=field_floor, xp=xp),
         'l2_differences': {}, 'observed_order': {}}
     with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
         for port in ('reflection', 'transmission'):
