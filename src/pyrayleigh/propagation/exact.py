@@ -272,10 +272,8 @@ def _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance):
     return blocks()
 
 
-def _native_static_blocks(path, probe, xp, arrays):
+def _native_static_blocks(path, probe, xp, arrays, denominator_tolerance):
     fiber = path.fiber
-    if fiber.gratings:
-        raise NotImplementedError('native exact fiber responses do not yet support Bragg intervals')
     _, (frequency,) = real_arrays(probe.frequency, xp=xp)
     valid = (xp.isfinite(frequency) & (frequency > 0.)
         & (frequency >= float(fiber.frequency_min)) & (frequency <= float(fiber.frequency_max)))
@@ -296,7 +294,7 @@ def _native_static_blocks(path, probe, xp, arrays):
             point.t_left_to_right, point.t_right_to_left, xp=xp)
         block = TwoPort(*fields)
         valid = valid & block.passivity_mask()
-        nodes.append((float(point.position), 0, block))
+        nodes.append((float(point.position), float(point.position), 0, block))
     if fiber.rayleigh is not None:
         sample = fiber.rayleigh
         _, (coefficients,) = complex_arrays(sample.coefficients, xp=xp)
@@ -306,17 +304,32 @@ def _native_static_blocks(path, probe, xp, arrays):
         transmission = xp.sqrt(1.-xp.where(allowed, power, xp.zeros_like(power)))
         for index, position in enumerate(sample.positions):
             r, t = coefficients[index], transmission[index]
-            nodes.append((float(position), 1, TwoPort(r, -xp.conj(r), t, t)))
-    nodes.sort(key=lambda node: (node[0], node[1]))
+            nodes.append((float(position), float(position), 1, TwoPort(r, -xp.conj(r), t, t)))
+    from .bragg import _native_bragg_block
+    for grating in fiber.gratings:
+        section = next((item for item in fiber.sections
+            if item.start <= grating.start and grating.end <= item.end), None)
+        if section is None:
+            raise NotImplementedError('a Bragg interval must lie within one section')
+        inside = sorted((node for node in nodes if node[2] in (0, 1)
+            and grating.start < node[0] < grating.end), key=lambda node: (node[0], node[2]))
+        block, local_valid = _native_bragg_block(grating, frequency, section.optics, path.state,
+            denominator_tolerance, attenuation=section.attenuation, index_perturbation=fiber.index_perturbation,
+            scatterers=[(position, value) for position, _, _, value in inside], xp=xp)
+        valid = valid & local_valid
+        nodes = [node for node in nodes if not (node[2] in (0, 1)
+            and grating.start < node[0] < grating.end)]
+        nodes.append((float(grating.start), float(grating.end), 2, block))
+    nodes.sort(key=lambda node: (node[0], node[2]))
     blocks, previous = [], 0.
-    for position, _, block in nodes:
+    for position, end, _, block in nodes:
         if position > previous:
             p = path.transmission(previous, position, frequency, xp=xp)
             propagation = TwoPort(0., 0., p, p)
             valid = valid & propagation.passivity_mask()
             blocks.append((position, propagation))
         blocks.append((position, block))
-        previous = position
+        previous = end
     p = path.transmission(previous, float(fiber.length), frequency, xp=xp)
     propagation = TwoPort(0., 0., p, p)
     valid = valid & propagation.passivity_mask()
@@ -330,9 +343,8 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
 
     Section attenuation must be declared as background loss. Only stored
     Rayleigh samples are used; no random draws or grid changes are made.
-    A single Fiber and static or frozen state are required. NumPy supports
-    all the blocks below. Other native namespaces currently support point
-    and Rayleigh scattering, with differentiable coefficients and path loads.
+    A single Fiber and static or frozen state are required. Point, Rayleigh
+    and Bragg scattering keep native coefficients and path loads.
     Invalid native samples return NaN fields, including at the denominator
     cutoff. NumPy keeps its numerical exceptions. Rayleigh transmission
     derivatives require abs(r) < 1; geometry and disorder are not resampled.
@@ -347,6 +359,9 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
     each linear piece, including its end limits.
     PointReflector and stored Rayleigh scatterers are composed at their
     material positions, including inside gratings.
+    Native bend meshes keep a fixed interval count while crossing positions
+    remain native. They can be denser than the NumPy mesh at the same
+    segment_length; compare refined responses, not equal mesh labels.
     """
     from ..response import Response
 
@@ -356,7 +371,7 @@ def exact_response(fiber, probe, state=None, *, loss_convention,
         blocks = _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance)
     else:
         with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
-            blocks, valid = _native_static_blocks(path, probe, xp, arrays)
+            blocks, valid = _native_static_blocks(path, probe, xp, arrays, denominator_tolerance)
     _, (frequency,) = real_arrays(probe.frequency, xp=xp)
     zero = xp.zeros_like(frequency, dtype=xp.complex128)
     one = xp.ones_like(zero)

@@ -96,8 +96,7 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     including repeated passages. The original probe and disorder are kept.
 
     method="exact" uses a static scalar two-port cascade, including Rayleigh
-    depletion. NumPy supports Bragg intervals too; other native namespaces
-    currently support points and stored Rayleigh samples. Invalid native
+    depletion and Bragg intervals in the native namespace. Invalid native
     samples give NaN fields; NumPy keeps numerical exceptions.
     It requires loss_convention="background" and rejects
     an explicitly supplied max_order. denominator_tolerance is optional and
