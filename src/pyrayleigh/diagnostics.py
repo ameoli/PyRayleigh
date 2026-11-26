@@ -6,7 +6,7 @@ import math
 import array_api_compat as apc
 import numpy as np
 
-from .backends import complex_arrays, real_arrays
+from .backends import array_namespace, complex_arrays, real_arrays
 from .propagation.cascade import _TOLERANCE
 from .propagation.direct import direct_response_consistent
 from .propagation.exact import exact_response
@@ -19,6 +19,8 @@ class DiagnosticResponse:
 
     The residual belongs to the same local block model, not to the legacy
     approximation. Power also needs its interference with the direct field.
+    Fields share a native namespace; the original Probe is kept as metadata.
+    With JAX, extract fields or interference terms inside a jit wrapper.
     """
 
     total: Response
@@ -31,10 +33,8 @@ class DiagnosticResponse:
             raise TypeError("total and direct must be Response objects")
         if self.total.probe is not self.direct.probe:
             raise ValueError("total and direct must share the same Probe")
-        xp = apc.array_namespace(self.total.reflection, self.total.transmission,
-            self.direct.reflection, self.direct.transmission, self.total.probe.frequency)
-        if not apc.is_numpy_namespace(xp):
-            raise NotImplementedError("DiagnosticResponse currently supports NumPy only")
+        array_namespace(self.total.reflection, self.total.transmission,
+            self.direct.reflection, self.direct.transmission)
         object.__setattr__(self, "metadata", dict(self.metadata))
         residual = Response(self.total.probe,
             reflection=self.total.reflection-self.direct.reflection,
@@ -52,12 +52,14 @@ class DiagnosticResponse:
     @property
     def reflection_interference(self):
         """Signed power term 2*real(direct_r*conj(residual_r))."""
-        return 2*np.real(self.direct.reflection*np.conj(self.residual.reflection))
+        xp = array_namespace(self.direct.reflection, self.residual.reflection)
+        return 2*xp.real(self.direct.reflection*xp.conj(self.residual.reflection))
 
     @property
     def transmission_interference(self):
         """Signed power term 2*real(direct_t*conj(residual_t))."""
-        return 2*np.real(self.direct.transmission*np.conj(self.residual.transmission))
+        xp = array_namespace(self.direct.transmission, self.residual.transmission)
+        return 2*xp.real(self.direct.transmission*xp.conj(self.residual.transmission))
 
 
 def compare_responses(response, reference, *, field_floor=1e-12):
@@ -137,19 +139,25 @@ def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., fi
 
 
 def compute_response_diagnostics(fiber, probe, state=None, *, loss_convention,
-                                 denominator_tolerance=_TOLERANCE):
+                                 denominator_tolerance=_TOLERANCE, xp=None):
     """Compute exact, direct-consistent and residual fields on the same input.
 
-    This runs the two scalar static NumPy calculations separately. Normal
+    This runs the two scalar static calculations separately in the selected
+    native namespace, including residuals and signed interference terms. Normal
     compute_response calls do not allocate these extra fields. Metadata is a
     short model summary, without copying the realization or inventing a seed.
+    Invalid native samples propagate NaN; NumPy keeps its numerical exceptions.
     """
     total = exact_response(fiber, probe, state, loss_convention=loss_convention,
-        denominator_tolerance=denominator_tolerance)
+        denominator_tolerance=denominator_tolerance, xp=xp)
     direct = direct_response_consistent(fiber, probe, state, loss_convention=loss_convention,
-        denominator_tolerance=denominator_tolerance)
+        denominator_tolerance=denominator_tolerance, xp=xp)
+    namespace = array_namespace(total.reflection, direct.reflection)
+    backend = 'numpy' if apc.is_numpy_namespace(namespace) else namespace.__name__
+    if apc.is_jax_namespace(namespace):
+        backend = 'jax'
     metadata = {"fiber_id": fiber.fiber_id, "loss_convention": loss_convention,
-        "model": "scalar_static", "backend": "numpy", "dtype": "complex128",
+        "model": "scalar_static", "backend": backend, "dtype": "complex128",
         "boundary": "matched_right", "denominator_tolerance": float(denominator_tolerance),
         "rayleigh_cells": 0 if fiber.rayleigh is None else fiber.rayleigh.cell_count}
     if fiber.gratings:
