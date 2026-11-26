@@ -337,6 +337,17 @@ def _native_static_blocks(path, probe, xp, arrays, denominator_tolerance):
     return blocks, valid
 
 
+def _response_blocks(fiber, probe, state, loss_convention, denominator_tolerance, xp):
+    path, xp, arrays = _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, xp)
+    if apc.is_numpy_namespace(xp):
+        blocks = _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance)
+        valid = xp.ones(probe.shape, dtype=xp.bool)
+    else:
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
+            blocks, valid = _native_static_blocks(path, probe, xp, arrays, denominator_tolerance)
+    return xp, blocks, valid
+
+
 def exact_response(fiber, probe, state=None, *, loss_convention,
                    denominator_tolerance=_TOLERANCE, xp=None):
     """Left reflection and transmission, with all orders of discrete scattering.
@@ -394,13 +405,8 @@ def exact_two_port(fiber, probe, state=None, *, loss_convention,
 
 
 def _exact_cascade(fiber, probe, state, *, loss_convention, denominator_tolerance, xp, left_only):
-    path, xp, arrays = _static_inputs(fiber, probe, state, loss_convention, denominator_tolerance, xp)
+    xp, blocks, valid = _response_blocks(fiber, probe, state, loss_convention, denominator_tolerance, xp)
     is_numpy = apc.is_numpy_namespace(xp)
-    if is_numpy:
-        blocks = _numpy_static_blocks(path, probe, xp, arrays, denominator_tolerance)
-    else:
-        with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
-            blocks, valid = _native_static_blocks(path, probe, xp, arrays, denominator_tolerance)
     _, (frequency,) = real_arrays(probe.frequency, xp=xp)
     zero = xp.zeros_like(frequency, dtype=xp.complex128)
     one = xp.ones_like(zero)
@@ -428,9 +434,7 @@ def _exact_cascade(fiber, probe, state, *, loss_convention, denominator_toleranc
                     frequency=float(frequency[error.index]), position=position) from error
             if is_numpy and left_only and np.all(result.t_left_to_right == 0.):
                 break
-    if is_numpy:
-        valid = xp.ones_like(result.r_left, dtype=xp.bool)
-    else:
+    if not is_numpy:
         fields = (result.r_left, result.r_right, result.t_left_to_right, result.t_right_to_left)
         for value in fields:
             valid = valid & xp.isfinite(value)
