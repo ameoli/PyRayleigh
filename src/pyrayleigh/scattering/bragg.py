@@ -248,8 +248,9 @@ class BraggGrating:
         return replace(self, coupling_phase=step)
 
     def two_port(self, frequency, optics, *, axial_strain=0., temperature_change=0.,
-                 attenuation=0., index_change=0., denominator_tolerance=64*np.finfo(np.float64).eps):
-        """NumPy optical fields at start/end, for absolute frequency [Hz].
+                 attenuation=0., index_change=0., denominator_tolerance=64*np.finfo(np.float64).eps,
+                 return_validity=False):
+        """Optical fields at start/end, for absolute frequency [Hz].
 
         optics is the uniform reference GuideOptics. Strain [1] and T-T_ref
         [K] and index_change [1] must be uniform scalars. The Bragg material
@@ -260,6 +261,9 @@ class BraggGrating:
         Coupling profiles use the same piecewise/midpoint rule as the fiber solver.
         denominator_tolerance is forwarded to their CMT cascade.
         Input-to-start propagation is separate.
+        Native namespaces currently support uniform gratings. Invalid native
+        samples return NaN fields; return_validity=True also returns the mask.
+        NumPy keeps its numerical exceptions and support for stored profiles.
         """
         from ..fiber import GuideOptics
         from ..propagation.cascade import TwoPort, _TOLERANCE, _check_tolerance
@@ -267,41 +271,56 @@ class BraggGrating:
         if not isinstance(optics, GuideOptics):
             raise TypeError('optics must be a GuideOptics')
         _check_tolerance(denominator_tolerance)
+        if not isinstance(return_validity, (bool, np.bool_)):
+            raise TypeError('return_validity must be a fixed bool')
         parameters = (frequency, *self._parameters(), optics.frequency_ref,
             optics.effective_index, optics.group_index, optics.gvd,
             axial_strain, temperature_change, attenuation, index_change, optics.strain_phase_factor,
             optics.strain_group_factor, optics.temperature_phase_factor, optics.temperature_group_factor)
         xp, arrays = complex_arrays(*parameters)
-        if not apc.is_numpy_namespace(xp):
-            raise NotImplementedError('BraggGrating.two_port currently supports NumPy only')
+        is_numpy = apc.is_numpy_namespace(xp)
         _, (frequency, wavelength) = real_arrays(frequency, self.bragg_wavelength, xp=xp)
         _, (strain, temperature, index) = real_arrays(axial_strain, temperature_change, index_change, xp=xp)
         if strain.ndim != 0 or temperature.ndim != 0 or index.ndim != 0:
             raise ValueError('grating strain, temperature and index change must be uniform scalars')
-        if any(not np.all(np.isfinite(value)) for value in arrays):
-            raise ValueError('grating response parameters must be finite')
-        if self.apodization is not None and np.any(self.apodization.values < 0.):
-            raise ValueError('apodization must be nonnegative')
-        if np.any(frequency <= 0.) or wavelength <= 0.:
-            raise ValueError('frequency and Bragg wavelength must be positive')
-        if optics.frequency_ref <= 0. or optics.effective_index <= 0. or optics.group_index <= 0.:
-            raise ValueError('guide reference frequency and indices must be positive')
+        if is_numpy:
+            if any(not np.all(np.isfinite(value)) for value in arrays):
+                raise ValueError('grating response parameters must be finite')
+            if self.apodization is not None and np.any(self.apodization.values < 0.):
+                raise ValueError('apodization must be nonnegative')
+            if np.any(frequency <= 0.) or wavelength <= 0.:
+                raise ValueError('frequency and Bragg wavelength must be positive')
+            if optics.frequency_ref <= 0. or optics.effective_index <= 0. or optics.group_index <= 0.:
+                raise ValueError('guide reference frequency and indices must be positive')
+        else:
+            if self.apodization is not None or self.coupling_phase is not None:
+                raise NotImplementedError('native BraggGrating.two_port currently supports uniform gratings only')
+            valid = xp.ones_like(frequency, dtype=xp.bool)
+            for value in arrays:
+                valid = valid & xp.isfinite(value)
+            valid = (valid & (frequency > 0.) & (wavelength > 0.) & (optics.frequency_ref > 0.)
+                & (optics.effective_index > 0.) & (optics.group_index > 0.))
 
         segments = 1
-        with np.errstate(over='raise', invalid='raise', divide='raise', under='ignore'):
+        length = self.length if is_numpy else float(self.length)
+        policy = 'raise' if is_numpy else 'ignore'
+        with np.errstate(over=policy, invalid=policy, divide=policy, under='ignore'):
             bragg_frequency = SPEED_OF_LIGHT/wavelength
-            delta_omega = 2*np.pi*(frequency-bragg_frequency)
-            detuning = (optics.group_delay_per_length(bragg_frequency)*delta_omega
+            delta_omega = 2*xp.pi*(frequency-bragg_frequency)
+            detuning = (optics.group_delay_per_length(bragg_frequency, xp=xp)*delta_omega
                 + .5*optics.gvd*delta_omega**2)
             phase_change = optics.relative_phase_change(strain, temperature, xp=xp)
             group_change = optics.relative_group_delay_change(strain, temperature, xp=xp)
-            if index != 0.:
+            if not is_numpy or index != 0.:
                 phase_change = phase_change+index/optics.effective_index
                 group_change = group_change+index/optics.group_index
-            detuning = (detuning+optics.reference_propagation_constant*phase_change
-                +optics.propagation_constant_offset(frequency)*group_change)
+            beta_ref = (optics.reference_propagation_constant if is_numpy
+                else optics._parameters(optics.frequency_ref, xp)[0])
+            detuning = (detuning+beta_ref*phase_change
+                +optics.propagation_constant_offset(frequency, xp=xp)*group_change)
             if self.apodization is None and self.coupling_phase is None:
-                envelope = uniform_bragg_two_port(detuning, self.coupling, self.length, attenuation=attenuation)
+                envelope, local_valid = uniform_bragg_two_port(detuning, self.coupling, length,
+                    attenuation=attenuation, return_validity=True)
             else:
                 from ..propagation.exact import _midpoint_load, _uniform_value
                 profiles = (self.apodization, self.coupling_phase)
@@ -337,12 +356,21 @@ class BraggGrating:
                     coupling = coupling.reshape((len(weights),)+(1,)*frequency.ndim)
                     envelope = piecewise_bragg_two_port(detuning[None, ...], coupling, np.diff(edges),
                         attenuation=np.asarray(attenuation)[None, ...], denominator_tolerance=denominator_tolerance)
-            carrier = (np.exp(-1j*optics.reference_propagation_constant*self.length)
-                *np.exp(-1j*optics.propagation_constant_offset(bragg_frequency)*self.length))
+            carrier_ref = beta_ref if is_numpy else xp.astype(beta_ref, xp.complex128)
+            carrier_offset = optics.propagation_constant_offset(bragg_frequency, xp=xp)
+            if not is_numpy:
+                carrier_offset = xp.astype(carrier_offset, xp.complex128)
+            carrier = (xp.exp(-1j*carrier_ref*length)*xp.exp(-1j*carrier_offset*length))
             result = TwoPort(envelope.r_left, envelope.r_right*carrier**2,
                 envelope.t_left_to_right*carrier, envelope.t_right_to_left*carrier)
-        result.validate_passivity(tolerance=_TOLERANCE*segments)
-        return result
+        if is_numpy:
+            result.validate_passivity(tolerance=_TOLERANCE*segments)
+            valid = xp.ones_like(result.r_left, dtype=xp.bool)
+        else:
+            valid = valid & local_valid & result.passivity_mask()
+            fields = (result.r_left, result.r_right, result.t_left_to_right, result.t_right_to_left)
+            result = TwoPort(*(xp.where(valid, value, xp.full_like(value, float('nan'))) for value in fields))
+        return (result, valid) if return_validity else result
 
 
 def linear_chirped_bragg(start, length, bragg_wavelength, coupling, detuning_slope, *,
