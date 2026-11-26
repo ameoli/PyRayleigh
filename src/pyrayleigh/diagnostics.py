@@ -62,23 +62,90 @@ class DiagnosticResponse:
         return 2*xp.real(self.direct.transmission*xp.conj(self.residual.transmission))
 
 
-def compare_responses(response, reference, *, field_floor=1e-12):
-    """NumPy field, power and wrapped-phase errors, separately for each port.
+def _native_max(values, xp):
+    values = xp.concat((xp.reshape(values, (-1,)), xp.zeros((1,), dtype=xp.float64)))
+    return xp.max(values)
+
+
+def _native_l2(values, xp):
+    scale = _native_max(values, xp)
+    safe = xp.where(scale > 0., scale, xp.ones_like(scale))
+    squared = xp.sum((values/safe)**2)
+    root = xp.sqrt(xp.where(squared > 0., squared, xp.ones_like(squared)))
+    return xp.where(squared > 0., scale*root, xp.zeros_like(scale))
+
+
+def _compare_native(response, reference, field_floor, arrays, xp):
+    _, (floor,) = real_arrays(field_floor, xp=xp)
+    if floor.ndim != 0:
+        raise ValueError('field_floor must be a scalar')
+    if response.shape != reference.shape:
+        raise ValueError('responses must have identical frequency samples')
+    time, reference_time = response.probe.time, reference.probe.time
+    if (time is None) != (reference_time is None):
+        raise ValueError('responses must have identical time samples')
+    _, (frequency, target_frequency) = real_arrays(response.probe.frequency, reference.probe.frequency, xp=xp)
+    valid = xp.isfinite(floor) & (floor > 0.) & xp.all(frequency == target_frequency)
+    for value in arrays:
+        valid = valid & xp.all(xp.isfinite(value))
+    if time is not None:
+        _, (time, reference_time) = real_arrays(time, reference_time, xp=xp)
+        valid = valid & xp.all(time == reference_time)
+    floor = xp.where(valid, floor, xp.ones_like(floor))
+    report = {}
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore', under='ignore'):
+        for port in ('reflection', 'transmission'):
+            _, (value, target) = complex_arrays(getattr(response, port), getattr(reference, port), xp=xp)
+            value, target = (xp.where(valid, item, xp.zeros_like(item)) for item in (value, target))
+            amplitude, reference_amplitude = xp.abs(value), xp.abs(target)
+            difference = xp.abs(value-target)
+            relative = _native_l2(difference, xp)/xp.maximum(_native_l2(reference_amplitude, xp), floor)
+            field_error = _native_max(difference, xp)
+            power_error = _native_max(xp.abs(amplitude**2-reference_amplitude**2), xp)
+            mask = (amplitude > floor) & (reference_amplitude > floor)
+            safe_amplitude = xp.where(mask, amplitude, xp.ones_like(amplitude))
+            safe_reference = xp.where(mask, reference_amplitude, xp.ones_like(reference_amplitude))
+            unit = xp.where(mask, value, xp.ones_like(value))/xp.astype(safe_amplitude, xp.complex128)
+            target_unit = xp.where(mask, target, xp.ones_like(target))/xp.astype(safe_reference, xp.complex128)
+            product = unit*xp.conj(target_unit)
+            phase = xp.abs(xp.atan2(xp.imag(product), xp.real(product)))
+            phase_error = _native_max(xp.where(mask, phase, xp.zeros_like(phase)), xp)
+            count = xp.sum(xp.astype(mask, xp.int64))
+            local_valid = valid & xp.isfinite(relative) & xp.isfinite(field_error) & xp.isfinite(power_error) & xp.isfinite(phase_error)
+            metrics = (relative, field_error, power_error, xp.where(count > 0, phase_error, xp.full_like(phase_error, float('nan'))))
+            names = ('relative_l2', 'max_field_error', 'max_power_error', 'max_phase_error_rad')
+            report[port] = {name: xp.where(local_valid, metric, xp.full_like(metric, float('nan')))
+                for name, metric in zip(names, metrics)}
+            report[port]['phase_samples'] = xp.where(local_valid, count, xp.zeros_like(count))
+    return report
+
+
+def compare_responses(response, reference, *, field_floor=1e-12, xp=None):
+    """Field, power and wrapped-phase errors, separately for each port.
 
     Both responses must have identical frequency and optional time samples.
     relative_l2 uses max(norm(reference), field_floor) as denominator. Phase
     errors use only samples where both amplitudes exceed field_floor, and
     are None when no sample qualifies. No interpolation or weighting is used.
     The caller chooses the reference; this alone does not prove convergence.
+    NumPy keeps Python scalars, None and numerical exceptions. Other namespaces
+    return native scalar arrays; missing phase is NaN with phase_samples=0.
+    Invalid native data, unequal sample values or arithmetic give NaN metrics
+    and zero phase counts. Shape/time-presence errors still raise. Probe data
+    are compared in the fields' namespace; xp can select it explicitly.
+    Native reductions use fixed shapes for jit. Derivatives exclude threshold
+    crossings, zero norms, tied maxima and the wrapped-phase branch cut.
     """
     if not isinstance(response, Response) or not isinstance(reference, Response):
         raise TypeError('response and reference must be Response objects')
+    xp, _ = complex_arrays(response.reflection, response.transmission,
+        reference.reflection, reference.transmission, field_floor, xp=xp)
     parameters = [response.reflection, response.transmission, reference.reflection,
         reference.transmission, response.probe.frequency, reference.probe.frequency, field_floor]
     parameters.extend(item.probe.time for item in (response, reference) if item.probe.time is not None)
-    xp, arrays = complex_arrays(*parameters)
+    xp, arrays = complex_arrays(*parameters, xp=xp)
     if not apc.is_numpy_namespace(xp):
-        raise NotImplementedError('compare_responses currently supports NumPy only')
+        return _compare_native(response, reference, field_floor, arrays, xp)
     _, (floor,) = real_arrays(field_floor, xp=xp)
     if floor.ndim != 0 or not np.isfinite(floor) or floor <= 0.:
         raise ValueError('field_floor must be a finite positive scalar')
@@ -123,6 +190,10 @@ def response_convergence_report(coarse, medium, fine, *, refinement_ratio=2., fi
         raise NotImplementedError('response_convergence_report currently supports NumPy only')
     if ratio.ndim != 0 or not np.isfinite(ratio) or ratio <= 1.:
         raise ValueError('refinement_ratio must be a finite scalar greater than one')
+    for response in (coarse, medium, fine):
+        if isinstance(response, Response) and not apc.is_numpy_namespace(
+                array_namespace(response.reflection, response.transmission)):
+            raise NotImplementedError('response_convergence_report currently supports NumPy only')
     report = {'refinement_ratio': float(ratio),
         'coarse_to_medium': compare_responses(coarse, medium, field_floor=field_floor),
         'medium_to_fine': compare_responses(medium, fine, field_floor=field_floor),
