@@ -45,6 +45,25 @@ def _native_uniform_bragg(delta, kappa, width, alpha, xp):
     return TwoPort(*fields), valid
 
 
+def _native_profile_samples(profile, edges, default, xp, require_uniform):
+    samples, valid = [], xp.asarray(True, dtype=xp.bool)
+    if profile is not None:
+        _, (values,) = real_arrays(profile.values, xp=xp)
+    for a, b in zip(edges[:-1], edges[1:]):
+        value = xp.asarray(default if profile is None else 0., dtype=xp.float64)
+        if profile is not None:
+            for index, (left, right) in enumerate(zip(profile.positions[:-1], profile.positions[1:])):
+                if left <= a and b <= right and left < right:
+                    change = values[index+1]-values[index]
+                    fraction = float(((a-left)+.5*(b-a))/(right-left))
+                    value = values[index]+fraction*change
+                    if require_uniform:
+                        valid = valid & (change == 0.)
+                    break
+        samples.append(value)
+    return xp.stack(samples), valid
+
+
 def uniform_bragg_two_port(detuning, coupling, length, *, attenuation=0., return_validity=False):
     """CMT solution, with detuning and complex coupling in 1/m.
 
@@ -261,8 +280,9 @@ class BraggGrating:
         Coupling profiles use the same piecewise/midpoint rule as the fiber solver.
         denominator_tolerance is forwarded to their CMT cascade.
         Input-to-start propagation is separate.
-        Native namespaces currently support uniform gratings. Invalid native
-        samples return NaN fields; return_validity=True also returns the mask.
+        Native profiles keep fixed material knots. Without segment_length,
+        nonconstant pieces give invalid samples. Invalid native samples return
+        NaN fields; return_validity=True also returns the mask.
         NumPy keeps its numerical exceptions and support for stored profiles.
         """
         from ..fiber import GuideOptics
@@ -273,11 +293,11 @@ class BraggGrating:
         _check_tolerance(denominator_tolerance)
         if not isinstance(return_validity, (bool, np.bool_)):
             raise TypeError('return_validity must be a fixed bool')
-        parameters = (frequency, *self._parameters(), optics.frequency_ref,
+        parameters = (*self._parameters(), optics.frequency_ref,
             optics.effective_index, optics.group_index, optics.gvd,
-            axial_strain, temperature_change, attenuation, index_change, optics.strain_phase_factor,
+            axial_strain, temperature_change, index_change, optics.strain_phase_factor,
             optics.strain_group_factor, optics.temperature_phase_factor, optics.temperature_group_factor)
-        xp, arrays = complex_arrays(*parameters)
+        xp, arrays = complex_arrays(frequency, attenuation, *parameters)
         is_numpy = apc.is_numpy_namespace(xp)
         _, (frequency, wavelength) = real_arrays(frequency, self.bragg_wavelength, xp=xp)
         _, (strain, temperature, index) = real_arrays(axial_strain, temperature_change, index_change, xp=xp)
@@ -293,11 +313,10 @@ class BraggGrating:
             if optics.frequency_ref <= 0. or optics.effective_index <= 0. or optics.group_index <= 0.:
                 raise ValueError('guide reference frequency and indices must be positive')
         else:
-            if self.apodization is not None or self.coupling_phase is not None:
-                raise NotImplementedError('native BraggGrating.two_port currently supports uniform gratings only')
-            valid = xp.ones_like(frequency, dtype=xp.bool)
-            for value in arrays:
-                valid = valid & xp.isfinite(value)
+            _, (alpha,) = real_arrays(attenuation, xp=xp)
+            valid = xp.isfinite(frequency) & xp.isfinite(alpha)
+            for value in arrays[2:]:
+                valid = valid & xp.all(xp.isfinite(value))
             valid = (valid & (frequency > 0.) & (wavelength > 0.) & (optics.frequency_ref > 0.)
                 & (optics.effective_index > 0.) & (optics.group_index > 0.))
 
@@ -335,27 +354,42 @@ class BraggGrating:
                     edges = np.asarray([*refined, edges[-1]])
                     if np.any(np.diff(edges) <= 0.):
                         raise ValueError('Bragg segment edges must be distinct')
-                samples = []
-                for profile, default in zip(profiles, (1., 0.)):
-                    if profile is None:
-                        values = np.full(len(edges)-1, default)
-                    elif self.segment_length is None:
-                        values = np.array([_uniform_value(profile, a, b) for a, b in zip(edges[:-1], edges[1:])])
+                if is_numpy:
+                    samples = []
+                    for profile, default in zip(profiles, (1., 0.)):
+                        if profile is None:
+                            values = np.full(len(edges)-1, default)
+                        elif self.segment_length is None:
+                            values = np.array([_uniform_value(profile, a, b) for a, b in zip(edges[:-1], edges[1:])])
+                        else:
+                            values = np.array([_midpoint_load(profile, a, b)[0] for a, b in zip(edges[:-1], edges[1:])])
+                        samples.append(values)
+                    weights, phases = samples
+                    coupling = self.coupling*weights
+                    if np.any(phases != 0.):
+                        coupling = coupling*np.exp(1j*phases)
+                    if np.all(coupling == coupling[0]):
+                        envelope = uniform_bragg_two_port(detuning, coupling[0], self.length,
+                            attenuation=attenuation)
                     else:
-                        values = np.array([_midpoint_load(profile, a, b)[0] for a, b in zip(edges[:-1], edges[1:])])
-                    samples.append(values)
-                weights, phases = samples
-                coupling = self.coupling*weights
-                if np.any(phases != 0.):
-                    coupling = coupling*np.exp(1j*phases)
-                if np.all(coupling == coupling[0]):
-                    envelope = uniform_bragg_two_port(detuning, coupling[0], self.length,
-                        attenuation=attenuation)
+                        segments = len(weights)
+                        coupling = coupling.reshape((len(weights),)+(1,)*frequency.ndim)
+                        envelope = piecewise_bragg_two_port(detuning[None, ...], coupling, np.diff(edges),
+                            attenuation=np.asarray(attenuation)[None, ...], denominator_tolerance=denominator_tolerance)
                 else:
-                    segments = len(weights)
-                    coupling = coupling.reshape((len(weights),)+(1,)*frequency.ndim)
-                    envelope = piecewise_bragg_two_port(detuning[None, ...], coupling, np.diff(edges),
-                        attenuation=np.asarray(attenuation)[None, ...], denominator_tolerance=denominator_tolerance)
+                    weights, amplitude_valid = _native_profile_samples(profiles[0], edges, 1., xp, self.segment_length is None)
+                    phases, phase_valid = _native_profile_samples(profiles[1], edges, 0., xp, self.segment_length is None)
+                    valid = valid & amplitude_valid & phase_valid
+                    if self.apodization is not None:
+                        valid = valid & xp.all(self.apodization.values >= 0.)
+                    _, (kappa,) = complex_arrays(self.coupling, xp=xp)
+                    coupling = kappa*xp.astype(weights, xp.complex128)*xp.exp(1j*xp.astype(phases, xp.complex128))
+                    delta, loss = xp.broadcast_arrays(detuning, alpha)
+                    segments = weights.shape[0]
+                    coupling = xp.reshape(coupling, (segments,)+(1,)*delta.ndim)
+                    widths = xp.asarray(np.diff(edges).tolist(), dtype=xp.float64)
+                    envelope, local_valid = piecewise_bragg_two_port(delta[None, ...], coupling, widths,
+                        attenuation=loss[None, ...], denominator_tolerance=denominator_tolerance, return_validity=True)
             carrier_ref = beta_ref if is_numpy else xp.astype(beta_ref, xp.complex128)
             carrier_offset = optics.propagation_constant_offset(bragg_frequency, xp=xp)
             if not is_numpy:
@@ -367,7 +401,7 @@ class BraggGrating:
             result.validate_passivity(tolerance=_TOLERANCE*segments)
             valid = xp.ones_like(result.r_left, dtype=xp.bool)
         else:
-            valid = valid & local_valid & result.passivity_mask()
+            valid = valid & local_valid & result.passivity_mask(tolerance=_TOLERANCE*segments)
             fields = (result.r_left, result.r_right, result.t_left_to_right, result.t_right_to_left)
             result = TwoPort(*(xp.where(valid, value, xp.full_like(value, float('nan'))) for value in fields))
         return (result, valid) if return_validity else result
