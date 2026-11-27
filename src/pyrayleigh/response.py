@@ -100,7 +100,7 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     samples give NaN fields; NumPy keeps numerical exceptions.
     It requires loss_convention="background" and rejects
     an explicitly supplied max_order. denominator_tolerance is optional and
-    forwarded to exact_response. These options are exclusive to exact.
+    forwarded to exact_response.
     It does not support time-varying states, multicore fibers or WeakFBG.
     Intervals in fiber.gratings accept piecewise constant strain, temperature
     and fiber.index_perturbation, splitting at profile knots.
@@ -118,6 +118,11 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     using their supplied local coefficients. Outside profiles use the normal
     path model.
 
+    method="direct_consistent" uses the same local blocks and transmissions,
+    retaining one reflection per block. Each Bragg interval is one block.
+    It shares the scalar static restrictions and solver options of exact,
+    including loss_convention="background" and max_order omitted.
+
     MultiCoreFiber returns MultiCoreResponse. Independent cores accept a
     shared state or one FiberState or None per core. Active crosstalk
     supports Rayleigh and point returns with a shared state and common
@@ -134,19 +139,21 @@ def compute_response(fiber, probe, state=None, *, max_order=_UNSET, xp=None,
     if not isinstance(probe, Probe):
         raise TypeError("probe must be a Probe")
     if not isinstance(method, str):
-        raise TypeError("method must be 'truncated' or 'exact'")
-    if method not in ("truncated", "exact"):
-        raise ValueError("method must be 'truncated' or 'exact'")
-    if method == "exact":
+        raise TypeError("method must be 'truncated', 'exact' or 'direct_consistent'")
+    if method not in ("truncated", "exact", "direct_consistent"):
+        raise ValueError("method must be 'truncated', 'exact' or 'direct_consistent'")
+    if method in ("exact", "direct_consistent"):
         if max_order is not _UNSET:
-            raise ValueError("max_order must be omitted for method='exact'")
+            raise ValueError(f"max_order must be omitted for method={method!r}")
+        from .propagation.direct import direct_response_consistent
         from .propagation.exact import exact_response
         options = {}
         if denominator_tolerance is not _UNSET:
             options["denominator_tolerance"] = denominator_tolerance
-        return exact_response(fiber, probe, state, loss_convention=loss_convention, xp=xp, **options)
+        solver = exact_response if method == "exact" else direct_response_consistent
+        return solver(fiber, probe, state, loss_convention=loss_convention, xp=xp, **options)
     if loss_convention is not None or denominator_tolerance is not _UNSET:
-        raise ValueError("loss_convention and denominator_tolerance require method='exact'")
+        raise ValueError("loss_convention and denominator_tolerance require method='exact' or 'direct_consistent'")
     max_order = 1 if max_order is _UNSET else max_order
     _check_max_order(max_order)
     if isinstance(fiber, MultiCoreFiber):
